@@ -12,7 +12,7 @@ use gpui::{
 
 use crate::add_instance::{button, field};
 use crate::java_field::JavaField;
-use crate::settings_dialog::{
+use crate::settings_page::{
     MEMORY_PRESETS, MIN_MEMORY_MB, chip, hint, nav_item, nav_panel, path_box, segment, segments,
 };
 use crate::text_input::{self, TextInput};

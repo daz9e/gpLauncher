@@ -21,7 +21,7 @@ use gpui::{
 use crate::accounts::{self, Accounts, AccountsEvent};
 use crate::add_instance::{self, AddInstance, AddInstanceEvent};
 use crate::edit_instance::{self, EditInstance, EditInstanceEvent};
-use crate::settings_dialog::{SettingsDialog, SettingsEvent};
+use crate::settings_page::{SettingsEvent, SettingsPage};
 use crate::shortcut;
 use crate::text_input::{self, TextInput};
 use crate::theme::{self, Theme};
@@ -76,7 +76,7 @@ pub struct Launcher {
     add_dialog: Option<Entity<AddInstance>>,
     edit_dialog: Option<Entity<EditInstance>>,
     accounts_dialog: Option<Entity<Accounts>>,
-    settings_dialog: Option<Entity<SettingsDialog>>,
+    settings_page: Option<Entity<SettingsPage>>,
     job: Option<Job>,
     /// Groups folded in the grid.
     collapsed: HashSet<String>,
@@ -110,7 +110,7 @@ impl Launcher {
             add_dialog: None,
             edit_dialog: None,
             accounts_dialog: None,
-            settings_dialog: None,
+            settings_page: None,
             job: None,
             collapsed: HashSet::new(),
             manual_downloads,
@@ -130,6 +130,7 @@ impl Launcher {
         if self.add_dialog.is_some() {
             return;
         }
+        self.close_settings(window, cx);
         let (data_dir, key) = (self.settings.data_dir.clone(), self.settings.curseforge_key());
         let dialog = cx.new(|cx| AddInstance::new(data_dir, key, window, cx));
         cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
@@ -191,25 +192,31 @@ impl Launcher {
         cx.notify();
     }
 
-    fn open_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.modal().is_some() {
+    /// Games or jobs are running.
+    fn busy(&self) -> bool {
+        self.job.as_ref().is_some_and(|j| j.active) || self.sessions.keys().any(|id| self.is_running(id))
+    }
+
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_page.is_some() || self.modal().is_some() {
             return;
         }
-        let busy =
-            self.job.as_ref().is_some_and(|j| j.active) || self.sessions.keys().any(|id| self.is_running(id));
-        let settings = self.settings.clone();
-        let dialog = cx.new(|cx| SettingsDialog::new(settings, busy, window, cx));
-        cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
-            if let SettingsEvent::Saved(settings) = event {
-                this.apply_settings(settings.clone(), window, cx);
-            }
-            this.settings_dialog = None;
-            window.focus(&this.focus_handle);
-            cx.notify();
+        let (settings, busy) = (self.settings.clone(), self.busy());
+        let page = cx.new(|cx| SettingsPage::new(settings, busy, window, cx));
+        cx.subscribe_in(&page, window, |this, _, event, window, cx| match event {
+            SettingsEvent::Changed(settings) => this.apply_settings(settings.clone(), window, cx),
+            SettingsEvent::Closed => this.close_settings(window, cx),
         })
         .detach();
-        self.settings_dialog = Some(dialog);
+        self.settings_page = Some(page);
         cx.notify();
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_page.take().is_some() {
+            window.focus(&self.focus_handle);
+            cx.notify();
+        }
     }
 
     fn apply_settings(&mut self, mut settings: Settings, window: &mut Window, cx: &mut Context<Self>) {
@@ -639,7 +646,7 @@ impl Launcher {
             ))
             .child(
                 toolbar_button("settings", "icons/settings.svg", "Settings", true, t)
-                    .on_click(cx.listener(|this, _, window, cx| this.open_settings_dialog(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
             )
             .child(div().flex_1())
             .child(div().w(px(240.)).min_w(px(120.)).flex_shrink().child(self.search.clone()))
@@ -1062,7 +1069,6 @@ impl Launcher {
         let edit = self.edit_dialog.clone().map(AnyView::from);
         edit.or_else(|| self.add_dialog.clone().map(AnyView::from))
             .or_else(|| self.accounts_dialog.clone().map(AnyView::from))
-            .or_else(|| self.settings_dialog.clone().map(AnyView::from))
     }
 }
 
@@ -1078,17 +1084,30 @@ impl Render for Launcher {
             .text_color(t.text)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &NewInstance, window, cx| this.open_add_dialog(window, cx)))
-            .on_action(
-                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings_dialog(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
             .on_action(
                 cx.listener(|this, _: &FocusSearch, window, cx| window.focus(&this.search.focus_handle(cx))),
             )
             .on_drop(
                 cx.listener(|this, paths: &ExternalPaths, _, cx| this.import(paths.paths().to_vec(), cx)),
             )
-            .child(self.toolbar(t, cx))
-            .child(div().flex_1().min_h_0().flex().child(self.grid(t, window, cx)).child(self.sidebar(t, cx)))
+            .map(|d| match self.settings_page.clone() {
+                Some(page) => {
+                    let busy = self.busy();
+                    if page.read(cx).busy() != busy {
+                        page.update(cx, |p, cx| p.set_busy(busy, cx));
+                    }
+                    d.child(div().flex_1().min_h_0().child(page))
+                }
+                None => d.child(self.toolbar(t, cx)).child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .child(self.grid(t, window, cx))
+                        .child(self.sidebar(t, cx)),
+                ),
+            })
             .child(self.status_bar(t))
             .when_some(self.modal(), |d, dialog| {
                 d.child(

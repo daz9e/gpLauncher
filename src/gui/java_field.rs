@@ -6,7 +6,7 @@ use gplauncher::java;
 use gpui::{App, Context, Entity, PathPromptOptions, Window, div, prelude::*};
 
 use crate::add_instance::button;
-use crate::settings_dialog::{hint, link};
+use crate::settings_page::{hint, link};
 use crate::text_input::{self, TextInput};
 use crate::theme::Theme;
 
@@ -111,7 +111,7 @@ impl Render for JavaField {
                 div()
                     .flex()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().child(self.input.clone()))
+                    .child(div().flex_1().min_w_0().flex().flex_col().child(self.input.clone()))
                     .child(
                         button("browse-java", "Browse…", true, false, t)
                             .on_click(cx.listener(|this, _, _, cx| this.pick(cx))),

@@ -11,7 +11,7 @@ mod edit_instance;
 mod java_field;
 mod launcher;
 mod modpack_browser;
-mod settings_dialog;
+mod settings_page;
 mod shortcut;
 mod text_input;
 mod theme;
@@ -39,7 +39,7 @@ fn main() {
         accounts::bind_keys(cx);
         add_instance::bind_keys(cx);
         edit_instance::bind_keys(cx);
-        settings_dialog::bind_keys(cx);
+        settings_page::bind_keys(cx);
         cx.set_menus(vec![
             Menu {
                 name: "gpLauncher".into(),

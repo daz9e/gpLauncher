@@ -7,8 +7,8 @@ use std::time::Duration;
 use gplauncher::instance::Loader;
 use gplauncher::modpack::{self, Filters, Pack, PackVersion, Sort, Source};
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, ScrollStrategy, SharedString, Task, UniformListScrollHandle,
-    Window, div, img, prelude::*, px, svg, uniform_list,
+    AnyElement, App, Context, Entity, Focusable, FontWeight, ScrollStrategy, SharedString, Task,
+    UniformListScrollHandle, Window, div, img, prelude::*, px, svg, uniform_list,
 };
 
 use crate::dropdown::Dropdown;
@@ -51,6 +51,8 @@ pub struct ModpackBrowser {
     selected: Option<usize>,
     versions: HashMap<String, Lookup<Vec<PackVersion>>>,
     selected_version: usize,
+    /// Narrows the selected pack's versions by name or Minecraft version.
+    version_search: Entity<TextInput>,
     /// Icon files by URL; `None` while downloading or when it failed.
     icons: HashMap<String, Option<PathBuf>>,
     scroll: UniformListScrollHandle,
@@ -73,6 +75,13 @@ impl ModpackBrowser {
             }));
         })
         .detach();
+        let version_search = cx.new(|cx| TextInput::new("Filter versions", cx).with_icon("icons/search.svg"));
+        cx.subscribe(&version_search, |this, _, _: &text_input::Changed, cx| {
+            this.selected_version = 0;
+            this.version_scroll.scroll_to_item(0, ScrollStrategy::Top);
+            cx.notify();
+        })
+        .detach();
         let mut this = ModpackBrowser {
             source,
             data_dir,
@@ -89,6 +98,7 @@ impl ModpackBrowser {
             selected: None,
             versions: HashMap::new(),
             selected_version: 0,
+            version_search,
             icons: HashMap::new(),
             scroll: UniformListScrollHandle::new(),
             version_scroll: UniformListScrollHandle::new(),
@@ -191,7 +201,17 @@ impl ModpackBrowser {
         cx.notify();
     }
 
-    pub fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+    /// Moves through the versions while their filter is focused, through the packs otherwise.
+    pub fn move_selection(&mut self, delta: isize, window: &Window, cx: &mut Context<Self>) {
+        if self.version_search.focus_handle(cx).is_focused(window) {
+            let count = self.matching_versions(cx).map_or(0, |v| v.len());
+            if count > 0 {
+                self.selected_version = self.selected_version.saturating_add_signed(delta).min(count - 1);
+                self.version_scroll.scroll_to_item(self.selected_version, ScrollStrategy::Center);
+                cx.notify();
+            }
+            return;
+        }
         if self.packs.is_empty() {
             return;
         }
@@ -223,17 +243,24 @@ impl ModpackBrowser {
         self.packs.get(self.selected?)
     }
 
-    /// Versions of the selected pack that fit the Minecraft version and loader filters.
-    fn matching_versions(&self) -> Option<Vec<&PackVersion>> {
+    /// Versions of the selected pack that fit the Minecraft version and loader filters
+    /// and the version search.
+    fn matching_versions(&self, cx: &App) -> Option<Vec<&PackVersion>> {
+        let query = self.version_search.read(cx).text().trim().to_lowercase();
+        let found = |v: &PackVersion| {
+            query.is_empty()
+                || v.name.to_lowercase().contains(&query)
+                || v.game_versions.iter().any(|g| g.to_lowercase().contains(&query))
+        };
         match self.versions.get(&self.selected_pack()?.id) {
-            Some(Some(Ok(v))) => Some(v.iter().filter(|v| self.filters.matches(v)).collect()),
+            Some(Some(Ok(v))) => Some(v.iter().filter(|v| self.filters.matches(v) && found(v)).collect()),
             _ => None,
         }
     }
 
     /// What the Install button would install.
-    pub fn selection(&self) -> Option<(Pack, PackVersion)> {
-        let version = *self.matching_versions()?.get(self.selected_version)?;
+    pub fn selection(&self, cx: &App) -> Option<(Pack, PackVersion)> {
+        let version = *self.matching_versions(cx)?.get(self.selected_version)?;
         Some((self.selected_pack()?.clone(), version.clone()))
     }
 
@@ -449,20 +476,23 @@ impl ModpackBrowser {
             .font_weight(FontWeight::MEDIUM)
             .text_color(t.muted)
             .child("Version");
+        let loaded = matches!(self.versions.get(&pack.id), Some(Some(Ok(v))) if v.len() > 1);
+        let search = loaded
+            .then(|| div().flex_none().flex().flex_col().px_4().pb_2().child(self.version_search.clone()));
         let note =
             |text: String| div().px_4().py_2().text_xs().text_color(t.muted).child(text).into_any_element();
         let body = match self.versions.get(&pack.id) {
             None | Some(None) => note("Loading…".into()),
             Some(Some(Err(e))) => note(format!("Could not load versions: {e}")),
             Some(Some(Ok(v))) if v.is_empty() => note("No versions available".into()),
-            Some(Some(Ok(_))) => match self.matching_versions().unwrap_or_default().len() {
+            Some(Some(Ok(_))) => match self.matching_versions(cx).unwrap_or_default().len() {
                 0 => note("No versions match the filters".into()),
                 // Packs can have hundreds of versions, so only the visible rows are built.
                 count => uniform_list(
                     "versions",
                     count,
                     cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                        let versions = this.matching_versions().unwrap_or_default();
+                        let versions = this.matching_versions(cx).unwrap_or_default();
                         range
                             .filter_map(|ix| Some(this.version_row(ix, versions.get(ix)?, t, cx)))
                             .collect::<Vec<_>>()
@@ -473,7 +503,15 @@ impl ModpackBrowser {
                 .into_any_element(),
             },
         };
-        div().flex_1().min_h_0().flex().flex_col().child(header).child(body).into_any_element()
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(header)
+            .children(search)
+            .child(body)
+            .into_any_element()
     }
 
     fn version_row(&self, ix: usize, v: &PackVersion, t: Theme, cx: &mut Context<Self>) -> AnyElement {

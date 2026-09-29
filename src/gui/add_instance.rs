@@ -288,7 +288,7 @@ impl AddInstance {
 
     fn selection(&self, cx: &App) -> Option<(Pack, PackVersion)> {
         let Page::Browse(platform) = self.page else { return None };
-        self.browsers.get(&platform)?.read(cx).selection()
+        self.browsers.get(&platform)?.read(cx).selection(cx)
     }
 
     fn save_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -316,12 +316,12 @@ impl AddInstance {
         }
     }
 
-    fn move_in_page(&mut self, delta: isize, cx: &mut Context<Self>) {
+    fn move_in_page(&mut self, delta: isize, window: &Window, cx: &mut Context<Self>) {
         match self.page {
             Page::Custom => self.move_selection(delta, cx),
             Page::Browse(platform) => {
                 if let Some(browser) = self.browsers.get(&platform) {
-                    browser.update(cx, |b, cx| b.move_selection(delta, cx));
+                    browser.update(cx, |b, cx| b.move_selection(delta, window, cx));
                 }
             }
             Page::Import => {}
@@ -704,8 +704,8 @@ impl Render for AddInstance {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_in_page(-1, cx)))
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_in_page(1, cx)))
+            .on_action(cx.listener(|this, _: &SelectPrev, window, cx| this.move_in_page(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &SelectNext, window, cx| this.move_in_page(1, window, cx)))
             .on_drop(cx.listener(|_, paths: &ExternalPaths, _, cx| {
                 cx.emit(AddInstanceEvent::Import(paths.paths().to_vec()))
             }))

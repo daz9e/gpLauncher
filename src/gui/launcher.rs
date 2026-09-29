@@ -1,6 +1,6 @@
 //! Main window: toolbar, instance grid, sidebar with actions for the selected instance, status bar.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,19 +11,22 @@ use gplauncher::import::{self, Imported};
 use gplauncher::instance::{self, Instance, Loader};
 use gplauncher::launch::{self, GameHandle};
 use gplauncher::settings::Settings;
-use gplauncher::{Event, Reporter, modpack, version};
+use gplauncher::{Event, Reporter, export, modpack, version};
 use gpui::{
-    AnyElement, App, Context, Entity, ExternalPaths, FocusHandle, Font, FontWeight, IntoElement,
-    LineFragment, ParentElement, Pixels, Render, SharedString, Styled, TextRun, Window, actions, div, img,
-    prelude::*, px, relative, rems, svg,
+    AnyElement, AnyView, App, Context, Entity, ExternalPaths, FocusHandle, Focusable, Font, FontWeight,
+    IntoElement, LineFragment, ParentElement, Pixels, PromptLevel, Render, SharedString, Styled, TextRun,
+    Window, actions, div, img, prelude::*, px, relative, rems, svg,
 };
 
 use crate::add_instance::{self, AddInstance, AddInstanceEvent};
+use crate::edit_instance::{self, EditInstance, EditInstanceEvent};
+use crate::shortcut;
+use crate::text_input::{self, TextInput};
 use crate::theme::Theme;
 
-actions!(launcher, [NewInstance]);
+actions!(launcher, [NewInstance, FocusSearch]);
 
-pub const TOOLBAR_HEIGHT: f32 = 52.;
+const TOOLBAR_HEIGHT: f32 = 44.;
 const SIDEBAR_WIDTH: f32 = 248.;
 const TILE_WIDTH: f32 = 128.;
 
@@ -67,8 +70,12 @@ pub struct Launcher {
     instances: Vec<Instance>,
     selected: Option<String>,
     sessions: HashMap<String, Session>,
+    search: Entity<TextInput>,
     add_dialog: Option<Entity<AddInstance>>,
+    edit_dialog: Option<Entity<EditInstance>>,
     job: Option<Job>,
+    /// Groups folded in the grid.
+    collapsed: HashSet<String>,
     /// Instances with files that have to be downloaded by hand (see [`import::BLOCKED_LIST`]).
     manual_downloads: HashSet<String>,
 }
@@ -86,14 +93,19 @@ impl Launcher {
             .collect();
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
+        let search = cx.new(|cx| TextInput::new("Search instances", cx).with_icon("icons/search.svg"));
+        cx.subscribe(&search, |_, _, _: &text_input::Changed, cx| cx.notify()).detach();
         Launcher {
             focus_handle,
             settings,
             instances,
             selected,
             sessions: HashMap::new(),
+            search,
             add_dialog: None,
+            edit_dialog: None,
             job: None,
+            collapsed: HashSet::new(),
             manual_downloads,
         }
     }
@@ -146,6 +158,131 @@ impl Launcher {
         let id = inst.id.clone();
         self.instances.insert(0, inst);
         self.select(id, cx);
+    }
+
+    /// Selects the instance with `id` and launches it (for `--launch` shortcuts).
+    pub fn launch_id(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.instances.iter().any(|i| i.id == id) {
+            true => {
+                self.select(id.to_string(), cx);
+                self.launch(cx);
+            }
+            false => self.notice(format!("No instance \"{id}\" to launch"), cx),
+        }
+    }
+
+    /// Shows `status` in the status bar until the user selects something.
+    fn notice(&mut self, status: String, cx: &mut Context<Self>) {
+        self.job = Some(Job { active: false, status, progress: None });
+        cx.notify();
+    }
+
+    fn is_running(&self, id: &str) -> bool {
+        self.sessions.get(id).is_some_and(|s| s.phase != Phase::Finished)
+    }
+
+    fn open_edit_dialog(&mut self, focus: edit_instance::Focus, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(inst) = self.selected().cloned() else { return };
+        if self.edit_dialog.is_some() || self.is_running(&inst.id) {
+            return;
+        }
+        let memory = self.settings.memory_mb;
+        let dialog = cx.new(|cx| EditInstance::new(inst, memory, focus, window, cx));
+        cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
+            if let EditInstanceEvent::Saved(inst) = event
+                && let Some(slot) = this.instances.iter_mut().find(|i| i.id == inst.id)
+            {
+                *slot = inst.clone();
+            }
+            this.edit_dialog = None;
+            window.focus(&this.focus_handle);
+            cx.notify();
+        })
+        .detach();
+        self.edit_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn open_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(inst) = self.selected() else { return };
+        let dir = inst.game_dir.clone();
+        let _ = std::fs::create_dir_all(&dir);
+        cx.open_with_system(&dir);
+    }
+
+    fn export(&mut self, cx: &mut Context<Self>) {
+        let Some(inst) = self.selected().cloned() else { return };
+        let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
+        let path = cx.prompt_for_new_path(&dir, Some(&export::file_name(&inst)));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(dest))) = path.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                this.run_job(&format!("Exporting {}", inst.name), cx, move |reporter, _| {
+                    export::export(&inst, &dest, reporter)?;
+                    Ok(format!("Exported to {}", dest.display()))
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        let Some(inst) = self.selected().cloned() else { return };
+        let data_dir = self.settings.data_dir.clone();
+        self.run_job(&format!("Copying {}", inst.name), cx, move |_, imported| {
+            let copy = instance::duplicate(&data_dir, &inst, &format!("{} (copy)", inst.name))?;
+            let status = format!("Copied to \"{}\"", copy.name);
+            imported(Imported { instance: copy, blocked: Vec::new() });
+            Ok(status)
+        });
+    }
+
+    fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(inst) = self.selected().cloned() else { return };
+        if self.is_running(&inst.id) {
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Delete \"{}\"?", inst.name),
+            Some("The instance folder with its worlds, mods and settings will be deleted permanently."),
+            &["Delete", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                if let Err(e) = instance::delete(&inst) {
+                    return this.notice(format!("Error: {e:#}"), cx);
+                }
+                let index = this.instances.iter().position(|i| i.id == inst.id).unwrap_or(0);
+                this.instances.retain(|i| i.id != inst.id);
+                this.sessions.remove(&inst.id);
+                this.manual_downloads.remove(&inst.id);
+                let next = this.instances.get(index).or(this.instances.last()).map(|i| i.id.clone());
+                this.selected = next;
+                this.notice(format!("Deleted \"{}\"", inst.name), cx);
+            });
+        })
+        .detach();
+    }
+
+    fn create_shortcut(&mut self, cx: &mut Context<Self>) {
+        let Some(inst) = self.selected() else { return };
+        let status = match shortcut::create(inst) {
+            Ok(path) => format!("Created {}", path.display()),
+            Err(e) => format!("Could not create a shortcut: {e:#}"),
+        };
+        self.notice(status, cx);
+    }
+
+    fn toggle_group(&mut self, group: String, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(&group) {
+            self.collapsed.insert(group);
+        }
+        cx.notify();
     }
 
     fn import(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -379,40 +516,35 @@ impl Launcher {
         let data_dir = self.settings.data_dir.clone();
         let account = self.account_name();
         div()
-            .id("toolbar")
             .flex()
             .flex_none()
             .items_center()
             .gap_1()
             .h(px(TOOLBAR_HEIGHT))
-            // Room for the traffic lights, which sit inside the toolbar.
-            .pl(px(84.))
-            .pr_3()
+            .px_3()
             .bg(t.panel)
             .border_b_1()
             .border_color(t.border)
-            .on_click(|e, window, _| {
-                if e.click_count() == 2 {
-                    window.titlebar_double_click();
-                }
-            })
             .child(
                 toolbar_button("add", "icons/plus.svg", "Add Instance", true, t)
                     .on_click(cx.listener(|this, _, window, cx| this.open_add_dialog(window, cx))),
             )
-            .child(toolbar_button("folders", "icons/folder.svg", "Folders", true, t).on_click(cx.listener(
-                move |_, _, _, cx| {
+            .child(toolbar_button("folders", "icons/folder.svg", "Folders", true, t).on_click(
+                move |_, _, cx| {
                     let _ = std::fs::create_dir_all(&data_dir);
                     cx.open_with_system(&data_dir);
                 },
-            )))
+            ))
             .child(toolbar_button("settings", "icons/settings.svg", "Settings", false, t))
             .child(div().flex_1())
+            .child(div().w(px(240.)).min_w(px(120.)).flex_shrink().child(self.search.clone()))
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap_2()
+                    .ml_2()
                     .pl_1()
                     .pr_3()
                     .py_1()
@@ -421,14 +553,11 @@ impl Launcher {
                     .border_color(t.border)
                     .bg(t.bg)
                     .child(avatar(&account, 22., t))
-                    .child(div().text_sm().text_color(t.text).child(account)),
+                    .child(div().text_sm().text_color(t.text).whitespace_nowrap().child(account)),
             )
     }
 
     fn grid(&self, t: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut name_font = window.text_style().font();
-        name_font.weight = FontWeight::MEDIUM;
-        let name_size = rems(0.875).to_pixels(window.rem_size());
         if self.instances.is_empty() {
             return div()
                 .flex_1()
@@ -447,6 +576,109 @@ impl Launcher {
                 )
                 .into_any_element();
         }
+        let query = self.search.read(cx).text().trim().to_lowercase();
+        let visible: Vec<&Instance> = self
+            .instances
+            .iter()
+            .filter(|i| query.is_empty() || i.name.to_lowercase().contains(&query))
+            .collect();
+        if visible.is_empty() {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(t.muted)
+                .child("No instances match the search")
+                .into_any_element();
+        }
+        let mut name_font = window.text_style().font();
+        name_font.weight = FontWeight::MEDIUM;
+        let name_size = rems(0.875).to_pixels(window.rem_size());
+        let tiles = |instances: &[&Instance], cx: &mut Context<Self>| {
+            // Tiles keep their own height: the selected one grows with its full name.
+            div().flex().flex_wrap().items_start().gap_2().children(
+                instances
+                    .iter()
+                    .map(|inst| self.tile(inst, name_font.clone(), name_size, t, cx))
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        // Ungrouped instances first, then groups by name.
+        let mut groups: BTreeMap<(bool, &str), Vec<&Instance>> = BTreeMap::new();
+        for inst in visible.iter().copied() {
+            groups.entry((!inst.group.is_empty(), inst.group.as_str())).or_default().push(inst);
+        }
+        let content = if groups.keys().all(|(named, _)| !named) {
+            div()
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap_2()
+                        .mb_3()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text)
+                                .child("Instances"),
+                        )
+                        .child(div().text_xs().text_color(t.subtle).child(visible.len().to_string())),
+                )
+                .child(tiles(&visible, cx))
+        } else {
+            div().flex().flex_col().gap_4().children(
+                groups
+                    .into_iter()
+                    .map(|((_, group), instances)| {
+                        let collapsed = self.collapsed.contains(group);
+                        let key = group.to_string();
+                        let label = if group.is_empty() { "Ungrouped".to_string() } else { key.clone() };
+                        div()
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("group-{group}")))
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .mb_2()
+                                    .cursor_pointer()
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.toggle_group(key.clone(), cx)),
+                                    )
+                                    .child(
+                                        svg()
+                                            .path(if collapsed {
+                                                "icons/chevron-right.svg"
+                                            } else {
+                                                "icons/chevron-down.svg"
+                                            })
+                                            .size(px(14.))
+                                            .text_color(t.muted),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(t.text)
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(t.subtle)
+                                            .child(instances.len().to_string()),
+                                    )
+                                    .child(div().flex_1().ml_1().h(px(1.)).bg(t.border)),
+                            )
+                            .when(!collapsed, |d| d.child(tiles(&instances, cx)))
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
         div()
             .id("instances")
             .flex_1()
@@ -454,77 +686,72 @@ impl Launcher {
             .overflow_y_scroll()
             .px_5()
             .py_4()
+            .child(content)
+            .into_any_element()
+    }
+
+    fn tile(
+        &self,
+        inst: &Instance,
+        name_font: Font,
+        name_size: Pixels,
+        t: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.selected.as_deref() == Some(inst.id.as_str());
+        let running = self.is_running(&inst.id);
+        let id = inst.id.clone();
+        div()
+            .id(SharedString::from(format!("inst-{}", inst.id)))
+            .w(px(TILE_WIDTH))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_2()
+            .pt_3()
+            .pb_2p5()
+            .px_2()
+            .rounded_lg()
+            .border_1()
+            .cursor_pointer()
+            .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent.opacity(0.35)))
+            .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|d| d.bg(t.hover)))
+            .on_click(cx.listener(move |this, e: &gpui::ClickEvent, _, cx| {
+                this.select(id.clone(), cx);
+                if e.click_count() == 2 {
+                    this.launch(cx);
+                }
+            }))
+            .child(instance_icon(64., running, inst.icon.as_deref(), t))
             .child(
                 div()
+                    .w_full()
                     .flex()
-                    .items_baseline()
-                    .gap_2()
-                    .mb_3()
+                    .flex_col()
+                    .items_center()
+                    .gap_0p5()
+                    // The selected tile shows the whole name, others two lines.
                     .child(
                         div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .items_center()
                             .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(t.text)
-                            .child("Instances"),
-                    )
-                    .child(div().text_xs().text_color(t.subtle).child(self.instances.len().to_string())),
-            )
-            // Tiles keep their own height: the selected one grows with its full name.
-            .child(div().flex().flex_wrap().items_start().gap_2().children(self.instances.iter().map(
-                |inst| {
-                    let selected = self.selected.as_deref() == Some(inst.id.as_str());
-                    let running = self.sessions.get(&inst.id).is_some_and(|s| s.phase != Phase::Finished);
-                    let id = inst.id.clone();
-                    div()
-                        .id(SharedString::from(format!("inst-{}", inst.id)))
-                        .w(px(TILE_WIDTH))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_2()
-                        .pt_3()
-                        .pb_2p5()
-                        .px_2()
-                        .rounded_lg()
-                        .border_1()
-                        .cursor_pointer()
-                        .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent.opacity(0.35)))
-                        .when(!selected, |d| {
-                            d.border_color(gpui::transparent_black()).hover(|d| d.bg(t.hover))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
-                        .child(instance_icon(64., running, inst.icon.as_deref(), t))
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .gap_0p5()
-                                // The selected tile shows the whole name, others two lines.
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .flex()
-                                        .flex_col()
-                                        .items_center()
-                                        .text_sm()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(t.text)
-                                        .text_center()
-                                        .when(selected, |d| d.child(inst.name.clone()))
-                                        .when(!selected, |d| {
-                                            d.children(
-                                                clamp_lines(&inst.name, name_font.clone(), name_size, 2, cx)
-                                                    .into_iter()
-                                                    .map(|line| div().whitespace_nowrap().child(line)),
-                                            )
-                                        }),
+                            .text_center()
+                            .when(selected, |d| d.child(inst.name.clone()))
+                            .when(!selected, |d| {
+                                d.children(
+                                    clamp_lines(&inst.name, name_font, name_size, 2, cx)
+                                        .into_iter()
+                                        .map(|line| div().whitespace_nowrap().child(line)),
                                 )
-                                .child(div().text_xs().text_color(t.muted).child(short_description(inst))),
-                        )
-                },
-            )))
+                            }),
+                    )
+                    .child(div().text_xs().text_color(t.muted).child(short_description(inst))),
+            )
             .into_any_element()
     }
 
@@ -532,20 +759,23 @@ impl Launcher {
         let (can_launch, can_kill) = (self.can_launch(), self.can_kill());
         let memory = self.selected().and_then(|i| i.memory_mb).unwrap_or(self.settings.memory_mb);
         div()
+            .id("sidebar")
             .w(px(SIDEBAR_WIDTH))
             .flex_none()
             .flex()
             .flex_col()
+            .overflow_y_scroll()
             .bg(t.panel)
             .border_l_1()
             .border_color(t.border)
             .when_some(self.selected(), |d, inst| {
-                let running = self.sessions.get(&inst.id).is_some_and(|s| s.phase != Phase::Finished);
+                let running = self.is_running(&inst.id);
                 let loader = match inst.loader {
                     Loader::Vanilla => "None".to_string(),
                     l if inst.loader_version.is_empty() => format!("{} (latest)", l.label()),
                     l => format!("{} {}", l.label(), inst.loader_version),
                 };
+                let group = if inst.group.is_empty() { "None".to_string() } else { inst.group.clone() };
                 d.child(
                     div()
                         .flex()
@@ -553,9 +783,9 @@ impl Launcher {
                         .items_center()
                         .gap_3()
                         .px_4()
-                        .pt_6()
+                        .pt_5()
                         .pb_4()
-                        .child(instance_icon(80., running, inst.icon.as_deref(), t))
+                        .child(instance_icon(72., running, inst.icon.as_deref(), t))
                         .child(
                             div()
                                 .w_full()
@@ -568,19 +798,67 @@ impl Launcher {
                 .child(
                     div()
                         .flex()
-                        .flex_col()
                         .gap_2()
                         .px_4()
-                        .pb_4()
+                        .pb_3()
                         .child(
                             action_button("launch", "icons/play.svg", "Launch", can_launch, true, t)
+                                .flex_1()
                                 .when(can_launch, |b| {
                                     b.on_click(cx.listener(|this, _, _, cx| this.launch(cx)))
                                 }),
                         )
                         .child(
                             action_button("kill", "icons/stop.svg", "Kill", can_kill, false, t)
+                                .px_3()
                                 .when(can_kill, |b| b.on_click(cx.listener(|this, _, _, cx| this.kill(cx)))),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .mx_2()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(t.border)
+                        .child(menu_item("edit", "icons/pencil.svg", "Edit", !running, false, t).when(
+                            !running,
+                            |b| {
+                                b.on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_edit_dialog(edit_instance::Focus::Name, window, cx)
+                                }))
+                            },
+                        ))
+                        .child(menu_item("group", "icons/tag.svg", "Change Group", !running, false, t).when(
+                            !running,
+                            |b| {
+                                b.on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_edit_dialog(edit_instance::Focus::Group, window, cx)
+                                }))
+                            },
+                        ))
+                        .child(
+                            menu_item("folder", "icons/folder.svg", "Folder", true, false, t)
+                                .on_click(cx.listener(|this, _, _, cx| this.open_folder(cx))),
+                        )
+                        .child(
+                            menu_item("export", "icons/share.svg", "Export", true, false, t)
+                                .on_click(cx.listener(|this, _, _, cx| this.export(cx))),
+                        )
+                        .child(
+                            menu_item("copy", "icons/copy.svg", "Copy", true, false, t)
+                                .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
+                        )
+                        .child(
+                            menu_item("shortcut", "icons/shortcut.svg", "Create Shortcut", true, false, t)
+                                .on_click(cx.listener(|this, _, _, cx| this.create_shortcut(cx))),
+                        )
+                        .child(
+                            menu_item("delete", "icons/trash.svg", "Delete", !running, true, t)
+                                .when(!running, |b| {
+                                    b.on_click(cx.listener(|this, _, window, cx| this.delete(window, cx)))
+                                }),
                         ),
                 )
                 .child(
@@ -589,11 +867,13 @@ impl Launcher {
                         .flex_col()
                         .gap_2()
                         .mx_4()
-                        .pt_4()
+                        .pt_3()
+                        .pb_4()
                         .border_t_1()
                         .border_color(t.border)
                         .child(detail("Minecraft", inst.minecraft.clone(), t))
                         .child(detail("Loader", loader, t))
+                        .child(detail("Group", group, t))
                         .child(detail("Memory", format!("{memory} MB"), t))
                         .child(detail("Last played", last_played(inst.last_played), t)),
                 )
@@ -604,7 +884,8 @@ impl Launcher {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .m_4()
+                            .mx_4()
+                            .mb_4()
                             .p_3()
                             .rounded_md()
                             .border_1()
@@ -666,6 +947,13 @@ impl Launcher {
     }
 }
 
+impl Launcher {
+    fn modal(&self) -> Option<AnyView> {
+        let edit = self.edit_dialog.clone().map(AnyView::from);
+        edit.or_else(|| self.add_dialog.clone().map(AnyView::from))
+    }
+}
+
 impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::for_appearance(window.appearance());
@@ -678,13 +966,16 @@ impl Render for Launcher {
             .text_color(t.text)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &NewInstance, window, cx| this.open_add_dialog(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FocusSearch, window, cx| window.focus(&this.search.focus_handle(cx))),
+            )
             .on_drop(
                 cx.listener(|this, paths: &ExternalPaths, _, cx| this.import(paths.paths().to_vec(), cx)),
             )
             .child(self.toolbar(t, cx))
             .child(div().flex_1().min_h_0().flex().child(self.grid(t, window, cx)).child(self.sidebar(t, cx)))
             .child(self.status_bar(t))
-            .when_some(self.add_dialog.clone(), |d, dialog| {
+            .when_some(self.modal(), |d, dialog| {
                 d.child(
                     div()
                         .id("modal")
@@ -825,6 +1116,35 @@ fn detail(label: &'static str, value: String, t: Theme) -> impl IntoElement {
         .child(div().text_color(t.text).truncate().child(value))
 }
 
+/// A row in the sidebar's action list.
+fn menu_item(
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    enabled: bool,
+    danger: bool,
+    t: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let color = match (enabled, danger) {
+        (false, _) => t.subtle,
+        (true, true) => t.danger,
+        (true, false) => t.text,
+    };
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .h(px(30.))
+        .px_2()
+        .rounded_md()
+        .text_sm()
+        .text_color(color)
+        .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(t.hover)))
+        .child(svg().path(icon).size(px(15.)).text_color(if enabled && !danger { t.muted } else { color }))
+        .child(label)
+}
+
 fn toolbar_button(
     id: &'static str,
     icon: &'static str,
@@ -836,6 +1156,7 @@ fn toolbar_button(
     div()
         .id(id)
         .flex()
+        .flex_none()
         .items_center()
         .gap_1p5()
         .px_2p5()

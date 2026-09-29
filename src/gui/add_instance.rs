@@ -743,7 +743,7 @@ fn kind_label(kind: &str) -> &'static str {
     }
 }
 
-fn field(label: &'static str, t: Theme) -> gpui::Div {
+pub fn field(label: &'static str, t: Theme) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -768,7 +768,7 @@ fn toggle(id: &'static str, label: &'static str, on: bool, t: Theme) -> gpui::St
         .child(label)
 }
 
-fn button(
+pub fn button(
     id: &'static str,
     label: &'static str,
     enabled: bool,

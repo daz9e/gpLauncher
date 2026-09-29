@@ -59,6 +59,8 @@ pub struct Instance {
     pub jvm_args: String,
     /// Unix time of the last launch, for sorting.
     pub last_played: u64,
+    /// Group the instance is shown under; empty = ungrouped.
+    pub group: String,
 }
 
 impl Instance {
@@ -158,6 +160,38 @@ pub fn create(
     };
     inst.save()?;
     Ok(inst)
+}
+
+/// Copies `inst` with all its files into a new instance called `name`.
+pub fn duplicate(data_dir: &Path, inst: &Instance, name: &str) -> Result<Instance> {
+    let mut copy = create(data_dir, name, &inst.minecraft, inst.loader, &inst.loader_version)?;
+    let result = copy_dir(&inst.dir, &copy.dir);
+    if let Err(e) = result {
+        let _ = delete(&copy);
+        return Err(e);
+    }
+    copy.memory_mb = inst.memory_mb;
+    copy.jvm_args = inst.jvm_args.clone();
+    copy.group = inst.group.clone();
+    copy.icon = inst.icon.as_ref().map(|_| copy.dir.join(ICON_FILE));
+    copy.save()?;
+    Ok(copy)
+}
+
+/// Copies the contents of `from` into `to` (except `instance.json`, which the caller writes).
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let entry = entry?;
+        let (src, dest) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_dir(&src, &dest)?;
+        } else if kind.is_file() && src != from.join("instance.json") {
+            fs::copy(&src, &dest).with_context(|| format!("copying {}", src.display()))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn delete(inst: &Instance) -> Result<()> {

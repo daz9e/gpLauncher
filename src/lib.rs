@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod curseforge;
 pub mod download;
+pub mod export;
 pub mod http;
 pub mod import;
 pub mod install;

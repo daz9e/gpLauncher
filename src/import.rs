@@ -266,6 +266,16 @@ fn import_mmc<R: Read + Seek>(
     }
     inst.save()?;
 
+    // Prism exports the icon as `<iconKey>.png` next to instance.cfg.
+    if let Some(key) = cfg_value("iconKey")
+        && let Ok(mut entry) = zip.by_name(&format!("{prefix}{key}.png"))
+    {
+        let path = inst.dir.join(instance::ICON_FILE);
+        let mut file = fs::File::create(&path)?;
+        std::io::copy(&mut entry, &mut file)?;
+        inst.icon = Some(path);
+    }
+
     reporter.status("Extracting instance files");
     let game_dir = inst.game_dir.clone();
     for sub in ["minecraft/", ".minecraft/"] {

@@ -7,7 +7,7 @@ use gpui::{
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point,
-    prelude::*, px, relative, size,
+    prelude::*, px, relative, size, svg,
 };
 
 use crate::theme::Theme;
@@ -45,6 +45,8 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    /// Icon shown before the text.
+    icon: Option<SharedString>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -61,6 +63,7 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             content: SharedString::default(),
             placeholder: placeholder.into(),
+            icon: None,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -72,6 +75,18 @@ impl TextInput {
 
     pub fn text(&self) -> &str {
         &self.content
+    }
+
+    pub fn with_icon(mut self, icon: impl Into<SharedString>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.content = text.into();
+        self.selected_range = self.content.len()..self.content.len();
+        self.marked_range = None;
+        cx.notify();
     }
 
     pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -548,7 +563,12 @@ impl Render for TextInput {
             .bg(t.bg)
             .text_sm()
             .text_color(t.text)
-            .child(TextElement { input: cx.entity(), theme: t })
+            .children(
+                self.icon
+                    .clone()
+                    .map(|icon| svg().path(icon).flex_none().mr_2().size(px(14.)).text_color(t.subtle)),
+            )
+            .child(div().flex_1().min_w_0().child(TextElement { input: cx.entity(), theme: t }))
     }
 }
 

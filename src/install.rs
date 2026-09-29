@@ -124,7 +124,14 @@ pub fn install(
             classpath.push(path);
         }
     }
-    classpath.push(client_jar);
+    // A profile that inherits the game (Fabric, Forge, ...) runs it from a jar named after itself,
+    // like the official launcher does: Forge's `ignoreList` finds the game jar by that name and
+    // fails with split packages when it is missing.
+    let launch_jar = match jar_id == id {
+        true => client_jar.clone(),
+        false => root.join("versions").join(id).join(format!("{id}.jar")),
+    };
+    classpath.push(launch_jar.clone());
 
     // Asset index
     let assets_root = root.join("assets");
@@ -171,6 +178,18 @@ pub fn install(
     }
 
     download::run(jobs, "Downloading game files", reporter)?;
+    if launch_jar != client_jar
+        && !http::file_ok(&launch_jar, None, fs::metadata(&client_jar).ok().map(|m| m.len()))
+    {
+        let _ = fs::remove_file(&launch_jar);
+        if let Some(parent) = launch_jar.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if fs::hard_link(&client_jar, &launch_jar).is_err() {
+            fs::copy(&client_jar, &launch_jar)
+                .with_context(|| format!("copying {}", client_jar.display()))?;
+        }
+    }
 
     // Old versions read assets from a flat "virtual" tree instead of the hashed store.
     let mut game_assets = assets_root.clone();

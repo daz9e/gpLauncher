@@ -2,6 +2,7 @@
 //! All functions here are blocking and are meant to run on worker threads;
 //! progress is reported through a [`Reporter`].
 
+pub mod addons;
 pub mod auth;
 pub mod content;
 pub mod curseforge;

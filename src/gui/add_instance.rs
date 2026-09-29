@@ -36,7 +36,7 @@ enum Page {
 const PAGES: [(Page, &str, &str); 4] = [
     (Page::Custom, "Custom", "icons/box.svg"),
     (Page::Import, "Import", "icons/folder.svg"),
-    (Page::Browse(Platform::Modrinth), "Modrinth", "icons/globe.svg"),
+    (Page::Browse(Platform::Modrinth), "Modrinth", "icons/modrinth.svg"),
     (Page::Browse(Platform::CurseForge), "CurseForge", "icons/globe.svg"),
 ];
 

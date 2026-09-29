@@ -1,4 +1,4 @@
-//! Icons compiled into the binary (Lucide, ISC license).
+//! Icons compiled into the binary (Lucide, ISC license; brand logos from Simple Icons, CC0).
 
 use std::borrow::Cow;
 
@@ -12,7 +12,7 @@ macro_rules! icons {
 }
 
 const ICONS: &[(&str, &[u8])] =
-    icons!["box", "chevron-down", "folder", "globe", "play", "plus", "settings", "stop"];
+    icons!["box", "chevron-down", "folder", "globe", "modrinth", "play", "plus", "settings", "stop"];
 
 pub struct Assets;
 

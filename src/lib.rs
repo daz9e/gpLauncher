@@ -3,6 +3,7 @@
 //! progress is reported through a [`Reporter`].
 
 pub mod auth;
+pub mod content;
 pub mod curseforge;
 pub mod download;
 pub mod export;
@@ -15,6 +16,7 @@ pub mod launch;
 pub mod loader;
 pub mod modpack;
 pub mod modrinth;
+pub mod nbt;
 pub mod platform;
 pub mod settings;
 pub mod version;

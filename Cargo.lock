@@ -2169,6 +2169,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
+ "flate2",
  "futures",
  "gpui",
  "image",
@@ -2176,6 +2177,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "toml 0.8.23",
  "ureq",
  "uuid",
  "zip",

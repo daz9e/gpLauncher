@@ -4,6 +4,7 @@
 //! into `versions/`. Forge and NeoForge need their installer to run; a profile installed that
 //! way into the launcher's `versions/` folder is picked up if present.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -60,6 +61,19 @@ pub fn prepare(root: &Path, inst: &mut Instance, reporter: &Reporter) -> Result<
         fs::write(&path, serde_json::to_vec_pretty(&profile)?)?;
     }
     Ok(id)
+}
+
+/// Minecraft versions the loader has builds for, or `None` when it cannot be told
+/// (vanilla, or loaders without a meta server).
+pub fn supported_versions(loader: Loader) -> Result<Option<HashSet<String>>> {
+    let meta = match loader {
+        Loader::Fabric => FABRIC_META,
+        Loader::Quilt => QUILT_META,
+        _ => return Ok(None),
+    };
+    let list = http::get_json(&format!("{meta}/versions/game"))?;
+    let entries = list.as_array().context("game version list is not an array")?;
+    Ok(Some(entries.iter().filter_map(|e| e["version"].as_str().map(String::from)).collect()))
 }
 
 fn find_local_forge(root: &Path, inst: &Instance) -> Result<String> {

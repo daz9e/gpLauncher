@@ -16,6 +16,7 @@ pub struct Theme {
     pub accent: Hsla,
     pub accent_soft: Hsla,
     pub on_accent: Hsla,
+    pub danger: Hsla,
 }
 
 impl Theme {
@@ -39,6 +40,7 @@ impl Theme {
                 accent,
                 accent_soft: accent.opacity(0.16),
                 on_accent: rgb(0xffffff).into(),
+                danger: rgb(0xff6b6b).into(),
             }
         } else {
             Theme {
@@ -54,6 +56,7 @@ impl Theme {
                 accent,
                 accent_soft: accent.opacity(0.09),
                 on_accent: rgb(0xffffff).into(),
+                danger: rgb(0xd92d20).into(),
             }
         }
     }

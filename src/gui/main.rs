@@ -1,7 +1,11 @@
 //! Graphical front end for the launcher core.
 
+mod add_instance;
 mod assets;
+mod dropdown;
 mod launcher;
+mod modpack_browser;
+mod text_input;
 mod theme;
 
 use gpui::{
@@ -10,15 +14,20 @@ use gpui::{
 };
 
 use crate::assets::Assets;
-use crate::launcher::{Launcher, TOOLBAR_HEIGHT};
+use crate::launcher::{Launcher, NewInstance, TOOLBAR_HEIGHT};
 
 actions!(gplauncher, [Quit]);
 
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus(vec![Menu { name: "gpLauncher".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-n", NewInstance, None)]);
+        text_input::bind_keys(cx);
+        add_instance::bind_keys(cx);
+        cx.set_menus(vec![
+            Menu { name: "gpLauncher".into(), items: vec![MenuItem::action("Quit", Quit)] },
+            Menu { name: "File".into(), items: vec![MenuItem::action("Add Instance…", NewInstance)] },
+        ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -26,7 +35,7 @@ fn main() {
         })
         .detach();
 
-        let bounds = Bounds::centered(None, size(px(960.), px(620.)), cx);
+        let bounds = Bounds::centered(None, size(px(1080.), px(700.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

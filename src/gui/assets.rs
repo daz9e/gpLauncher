@@ -11,7 +11,8 @@ macro_rules! icons {
     };
 }
 
-const ICONS: &[(&str, &[u8])] = icons!["box", "folder", "play", "plus", "settings", "stop"];
+const ICONS: &[(&str, &[u8])] =
+    icons!["box", "chevron-down", "folder", "globe", "play", "plus", "settings", "stop"];
 
 pub struct Assets;
 

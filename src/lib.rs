@@ -3,6 +3,7 @@
 //! progress is reported through a [`Reporter`].
 
 pub mod auth;
+pub mod curseforge;
 pub mod download;
 pub mod http;
 pub mod import;
@@ -11,6 +12,8 @@ pub mod instance;
 pub mod java;
 pub mod launch;
 pub mod loader;
+pub mod modpack;
+pub mod modrinth;
 pub mod platform;
 pub mod settings;
 pub mod version;

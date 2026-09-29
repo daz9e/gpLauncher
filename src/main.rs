@@ -15,7 +15,8 @@ Usage:
       Launch an instance, or a plain version from the game folder, with an offline account.
       Defaults to the latest release.
   gplauncher import FILE...
-      Import .mrpack (Modrinth) or MultiMC/Prism .zip modpacks as new instances.
+      Import .mrpack (Modrinth), CurseForge .zip or MultiMC/Prism .zip modpacks as new instances.
+      CurseForge packs need an API key in CURSEFORGE_API_KEY or the launcher settings.
   gplauncher versions [--all]
       List available versions (releases only, unless --all).
   gplauncher instances
@@ -95,8 +96,16 @@ fn cmd_import(files: &[String]) -> Result<()> {
     let settings = Settings::load();
     let reporter = stdout_reporter();
     for file in files {
-        let inst = import::import(&settings.data_dir, Path::new(file), &reporter)?;
+        let imported = import::import(&settings, Path::new(file), &reporter)?;
+        let inst = &imported.instance;
         println!("Imported \"{}\" ({})", inst.name, inst.description());
+        if !imported.blocked.is_empty() {
+            println!(
+                "{} file(s) must be downloaded by hand, see {}",
+                imported.blocked.len(),
+                inst.dir.join(import::BLOCKED_LIST).display()
+            );
+        }
     }
     Ok(())
 }

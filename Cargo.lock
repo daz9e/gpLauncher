@@ -2171,6 +2171,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "gpui",
+ "image",
  "md-5 0.11.0",
  "serde",
  "serde_json",

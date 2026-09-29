@@ -21,6 +21,8 @@ pub struct Settings {
     pub java_path: String,
     pub jvm_args: String,
     pub ms_client_id: String,
+    /// CurseForge API key (console.curseforge.com). `CURSEFORGE_API_KEY` overrides it.
+    pub curseforge_api_key: String,
     pub accounts: Vec<Account>,
     pub selected_account: usize,
 }
@@ -34,6 +36,7 @@ impl Default for Settings {
             java_path: String::new(),
             jvm_args: String::new(),
             ms_client_id: String::new(),
+            curseforge_api_key: String::new(),
             accounts: Vec::new(),
             selected_account: 0,
         }
@@ -74,6 +77,12 @@ impl Settings {
         } else {
             PathBuf::from(self.game_dir.trim())
         }
+    }
+
+    pub fn curseforge_key(&self) -> Option<String> {
+        let key = std::env::var("CURSEFORGE_API_KEY").unwrap_or_else(|_| self.curseforge_api_key.clone());
+        let key = key.trim();
+        (!key.is_empty()).then(|| key.to_string())
     }
 
     pub fn account(&self) -> Option<&Account> {

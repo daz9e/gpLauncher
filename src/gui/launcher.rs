@@ -1,21 +1,26 @@
 //! Main window: toolbar, instance grid, sidebar with actions for the selected instance, status bar.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
-    prelude::*, px, relative, svg,
-};
 use gplauncher::auth::Account;
+use gplauncher::import::{self, Imported};
 use gplauncher::instance::{self, Instance, Loader};
 use gplauncher::launch::{self, GameHandle};
 use gplauncher::settings::Settings;
-use gplauncher::{Event, Reporter, version};
+use gplauncher::{Event, Reporter, modpack, version};
+use gpui::{
+    AnyElement, Context, Entity, ExternalPaths, FocusHandle, FontWeight, IntoElement, ParentElement, Render,
+    SharedString, Styled, Window, actions, div, prelude::*, px, relative, svg,
+};
 
+use crate::add_instance::{self, AddInstance, AddInstanceEvent};
 use crate::theme::Theme;
+
+actions!(launcher, [NewInstance]);
 
 pub const TOOLBAR_HEIGHT: f32 = 52.;
 const SIDEBAR_WIDTH: f32 = 248.;
@@ -41,11 +46,30 @@ enum Msg {
     Done(Result<(), String>),
 }
 
+/// Modpack import or install running in the background (not tied to an instance).
+struct Job {
+    active: bool,
+    status: String,
+    progress: Option<(u64, u64)>,
+}
+
+enum JobMsg {
+    Event(Event),
+    Imported(Imported),
+    /// Final status line, or the error.
+    Done(Result<String, String>),
+}
+
 pub struct Launcher {
+    focus_handle: FocusHandle,
     settings: Settings,
     instances: Vec<Instance>,
     selected: Option<String>,
     sessions: HashMap<String, Session>,
+    add_dialog: Option<Entity<AddInstance>>,
+    job: Option<Job>,
+    /// Instances with files that have to be downloaded by hand (see [`import::BLOCKED_LIST`]).
+    manual_downloads: HashSet<String>,
 }
 
 impl Launcher {
@@ -54,7 +78,176 @@ impl Launcher {
         let settings = Settings::load();
         let instances = instance::list(&settings.data_dir);
         let selected = instances.first().map(|i| i.id.clone());
-        Launcher { settings, instances, selected, sessions: HashMap::new() }
+        let manual_downloads = instances
+            .iter()
+            .filter(|i| i.dir.join(import::BLOCKED_LIST).is_file())
+            .map(|i| i.id.clone())
+            .collect();
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle);
+        Launcher {
+            focus_handle,
+            settings,
+            instances,
+            selected,
+            sessions: HashMap::new(),
+            add_dialog: None,
+            job: None,
+            manual_downloads,
+        }
+    }
+
+    fn select(&mut self, id: String, cx: &mut Context<Self>) {
+        self.selected = Some(id);
+        // A finished import's message has been seen once the user moves on.
+        if self.job.as_ref().is_some_and(|j| !j.active) {
+            self.job = None;
+        }
+        cx.notify();
+    }
+
+    fn open_add_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.add_dialog.is_some() {
+            return;
+        }
+        let (data_dir, key) = (self.settings.data_dir.clone(), self.settings.curseforge_key());
+        let dialog = cx.new(|cx| AddInstance::new(data_dir, key, window, cx));
+        cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
+            match event {
+                AddInstanceEvent::Created(inst) => this.add_instance(inst.clone(), cx),
+                AddInstanceEvent::Import(paths) => this.import(paths.clone(), cx),
+                AddInstanceEvent::Install(pack, version) => this.install(pack.clone(), version.clone(), cx),
+                AddInstanceEvent::SaveCurseForgeKey(key) => {
+                    this.settings.curseforge_api_key = key.clone();
+                    if let Err(e) = this.settings.save() {
+                        this.job = Some(Job {
+                            active: false,
+                            status: format!("Could not save settings: {e:#}"),
+                            progress: None,
+                        });
+                    }
+                    return;
+                }
+                AddInstanceEvent::Dismissed => {}
+            }
+            this.add_dialog = None;
+            window.focus(&this.focus_handle);
+            cx.notify();
+        })
+        .detach();
+        self.add_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Puts a new instance at the front of the grid and selects it.
+    fn add_instance(&mut self, inst: Instance, cx: &mut Context<Self>) {
+        self.instances.retain(|i| i.id != inst.id);
+        let id = inst.id.clone();
+        self.instances.insert(0, inst);
+        self.select(id, cx);
+    }
+
+    fn import(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let files = add_instance::importable(&paths);
+        if files.is_empty() {
+            self.job = Some(Job {
+                active: false,
+                status: "Nothing to import: expected .mrpack or .zip modpacks".into(),
+                progress: None,
+            });
+            cx.notify();
+            return;
+        }
+        let settings = self.settings.clone();
+        self.run_job("Importing", cx, move |reporter, imported| {
+            let mut summary = Summary::default();
+            for file in &files {
+                let result = import::import(&settings, file, reporter)?;
+                summary.add(&result);
+                imported(result);
+            }
+            Ok(summary.status())
+        });
+    }
+
+    fn install(&mut self, pack: modpack::Pack, version: modpack::PackVersion, cx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        self.run_job(&format!("Installing {}", pack.title), cx, move |reporter, imported| {
+            let result = modpack::install(&settings, &pack, &version, reporter)?;
+            let mut summary = Summary::default();
+            summary.add(&result);
+            imported(result);
+            Ok(summary.status())
+        });
+    }
+
+    /// Runs `work` on a worker thread, showing its progress in the status bar.
+    /// Only one job runs at a time.
+    fn run_job(
+        &mut self,
+        status: &str,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&Reporter, &dyn Fn(Imported)) -> anyhow::Result<String> + Send + 'static,
+    ) {
+        if self.job.as_ref().is_some_and(|j| j.active) {
+            return;
+        }
+        self.job = Some(Job { active: true, status: status.into(), progress: None });
+        let (tx, mut rx) = mpsc::unbounded();
+        std::thread::spawn(move || {
+            let events = tx.clone();
+            let reporter = Reporter::new(move |e| {
+                let _ = events.unbounded_send(JobMsg::Event(e));
+            });
+            let imported = |i| {
+                let _ = tx.unbounded_send(JobMsg::Imported(i));
+            };
+            let result = work(&reporter, &imported);
+            let _ = tx.unbounded_send(JobMsg::Done(result.map_err(|e| format!("{e:#}"))));
+        });
+
+        cx.spawn(async move |this, cx| {
+            while let Some(msg) = rx.next().await {
+                let alive = this.update(cx, |this, cx| {
+                    this.apply_job(msg, cx);
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn apply_job(&mut self, msg: JobMsg, cx: &mut Context<Self>) {
+        match msg {
+            JobMsg::Imported(imported) => {
+                if !imported.blocked.is_empty() {
+                    self.manual_downloads.insert(imported.instance.id.clone());
+                }
+                self.add_instance(imported.instance, cx);
+            }
+            msg => {
+                let Some(job) = self.job.as_mut() else { return };
+                match msg {
+                    JobMsg::Event(Event::Status(s)) => job.status = s,
+                    JobMsg::Event(Event::Progress { done, total }) => {
+                        job.progress = (total > 0).then_some((done, total));
+                    }
+                    JobMsg::Done(result) => {
+                        job.active = false;
+                        job.progress = None;
+                        job.status = match result {
+                            Ok(status) => status,
+                            Err(e) => format!("Error: {e}"),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     fn selected(&self) -> Option<&Instance> {
@@ -83,7 +276,12 @@ impl Launcher {
         let handle = GameHandle::default();
         self.sessions.insert(
             id.clone(),
-            Session { phase: Phase::Preparing, handle: handle.clone(), status: "Starting".into(), progress: None },
+            Session {
+                phase: Phase::Preparing,
+                handle: handle.clone(),
+                status: "Starting".into(),
+                progress: None,
+            },
         );
 
         let mut settings = self.settings.clone();
@@ -197,7 +395,10 @@ impl Launcher {
                     window.titlebar_double_click();
                 }
             })
-            .child(toolbar_button("add", "icons/plus.svg", "Add Instance", false, t))
+            .child(
+                toolbar_button("add", "icons/plus.svg", "Add Instance", true, t)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_add_dialog(window, cx))),
+            )
             .child(toolbar_button("folders", "icons/folder.svg", "Folders", true, t).on_click(cx.listener(
                 move |_, _, _, cx| {
                     let _ = std::fs::create_dir_all(&data_dir);
@@ -234,7 +435,12 @@ impl Launcher {
                 .gap_2()
                 .child(svg().path("icons/box.svg").size(px(28.)).text_color(t.subtle))
                 .child(div().text_color(t.text).font_weight(FontWeight::MEDIUM).child("No instances yet"))
-                .child(div().text_sm().text_color(t.muted).child("Import a modpack with `gplauncher import FILE`"))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(t.muted)
+                        .child("Create one with Add Instance, or drop a modpack (.mrpack, .zip) here"),
+                )
                 .into_any_element();
         }
         div()
@@ -250,7 +456,13 @@ impl Launcher {
                     .items_baseline()
                     .gap_2()
                     .mb_3()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text).child("Instances"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.text)
+                            .child("Instances"),
+                    )
                     .child(div().text_xs().text_color(t.subtle).child(self.instances.len().to_string())),
             )
             .child(div().flex().flex_wrap().gap_2().children(self.instances.iter().map(|inst| {
@@ -272,10 +484,7 @@ impl Launcher {
                     .cursor_pointer()
                     .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent.opacity(0.35)))
                     .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|d| d.bg(t.hover)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected = Some(id.clone());
-                        cx.notify();
-                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
                     .child(instance_icon(64., running, t))
                     .child(
                         div()
@@ -345,10 +554,12 @@ impl Launcher {
                         .gap_2()
                         .px_4()
                         .pb_4()
-                        .child(action_button("launch", "icons/play.svg", "Launch", can_launch, true, t).when(
-                            can_launch,
-                            |b| b.on_click(cx.listener(|this, _, _, cx| this.launch(cx))),
-                        ))
+                        .child(
+                            action_button("launch", "icons/play.svg", "Launch", can_launch, true, t)
+                                .when(can_launch, |b| {
+                                    b.on_click(cx.listener(|this, _, _, cx| this.launch(cx)))
+                                }),
+                        )
                         .child(
                             action_button("kill", "icons/stop.svg", "Kill", can_kill, false, t)
                                 .when(can_kill, |b| b.on_click(cx.listener(|this, _, _, cx| this.kill(cx)))),
@@ -368,19 +579,46 @@ impl Launcher {
                         .child(detail("Memory", format!("{memory} MB"), t))
                         .child(detail("Last played", last_played(inst.last_played), t)),
                 )
+                .when(self.manual_downloads.contains(&inst.id), |d| {
+                    let list = inst.dir.join(import::BLOCKED_LIST);
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .m_4()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(t.danger.opacity(0.4))
+                            .bg(t.danger.opacity(0.08))
+                            .text_xs()
+                            .child(div().text_color(t.text).child("Some mods must be downloaded by hand"))
+                            .child(
+                                div()
+                                    .id("manual-list")
+                                    .text_color(t.accent)
+                                    .cursor_pointer()
+                                    .hover(|d| d.underline())
+                                    .on_click(move |_, _, cx| cx.open_with_system(&list))
+                                    .child("Show the list"),
+                            ),
+                    )
+                })
             })
     }
 
     fn status_bar(&self, t: Theme) -> impl IntoElement {
         let inst = self.selected();
         let session = inst.and_then(|i| self.sessions.get(&i.id));
-        let text = match (inst, session) {
-            (_, Some(s)) => s.status.clone(),
-            (Some(_), None) => "Ready".into(),
-            (None, None) => String::new(),
+        // An active import wins; a finished one stays until the user selects something.
+        let (text, active, progress) = match (&self.job, session) {
+            (Some(job), _) if job.active => (job.status.clone(), true, job.progress),
+            (_, Some(s)) => (s.status.clone(), s.phase != Phase::Finished, s.progress),
+            (Some(job), None) => (job.status.clone(), false, None),
+            (None, None) if inst.is_some() => ("Ready".into(), false, None),
+            (None, None) => (String::new(), false, None),
         };
-        let active = session.is_some_and(|s| s.phase != Phase::Finished);
-        let progress = session.and_then(|s| s.progress);
         div()
             .flex()
             .flex_none()
@@ -414,14 +652,60 @@ impl Render for Launcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::for_appearance(window.appearance());
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(t.bg)
             .text_color(t.text)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &NewInstance, window, cx| this.open_add_dialog(window, cx)))
+            .on_drop(
+                cx.listener(|this, paths: &ExternalPaths, _, cx| this.import(paths.paths().to_vec(), cx)),
+            )
             .child(self.toolbar(t, cx))
             .child(div().flex_1().min_h_0().flex().child(self.grid(t, cx)).child(self.sidebar(t, cx)))
             .child(self.status_bar(t))
+            .when_some(self.add_dialog.clone(), |d, dialog| {
+                d.child(
+                    div()
+                        .id("modal")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_6()
+                        .bg(gpui::black().opacity(0.35))
+                        .occlude()
+                        .child(dialog),
+                )
+            })
+    }
+}
+
+/// Final status line of an import job.
+#[derive(Default)]
+struct Summary {
+    names: Vec<String>,
+    blocked: usize,
+}
+
+impl Summary {
+    fn add(&mut self, imported: &Imported) {
+        self.names.push(imported.instance.name.clone());
+        self.blocked += imported.blocked.len();
+    }
+
+    fn status(&self) -> String {
+        let done = match self.names.as_slice() {
+            [name] => format!("Added \"{name}\""),
+            names => format!("Added {} instances", names.len()),
+        };
+        match self.blocked {
+            0 => done,
+            n => format!("{done}; {n} file(s) must be downloaded by hand, see the sidebar"),
+        }
     }
 }
 
@@ -457,7 +741,11 @@ fn instance_icon(size: f32, running: bool, t: Theme) -> impl IntoElement {
         .bg(t.tile)
         .border_1()
         .border_color(if running { t.accent } else { t.tile_edge })
-        .child(svg().path("icons/box.svg").size(px(size * 0.42)).text_color(if running { t.accent } else { t.subtle }))
+        .child(svg().path("icons/box.svg").size(px(size * 0.42)).text_color(if running {
+            t.accent
+        } else {
+            t.subtle
+        }))
 }
 
 fn avatar(name: &str, size: f32, t: Theme) -> impl IntoElement {

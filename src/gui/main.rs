@@ -1,5 +1,8 @@
 //! Graphical front end for the launcher core.
 
+// Release builds on Windows shouldn't open a console window next to the GUI.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod accounts;
 mod add_instance;
 mod assets;

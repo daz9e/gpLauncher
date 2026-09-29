@@ -506,7 +506,7 @@ impl Render for SettingsPage {
 }
 
 /// A rounded card of rows, divided by hairlines.
-fn group(rows: impl IntoIterator<Item = AnyElement>, t: Theme) -> gpui::Div {
+pub fn group(rows: impl IntoIterator<Item = AnyElement>, t: Theme) -> gpui::Div {
     div().flex().flex_col().rounded_lg().border_1().border_color(t.border).bg(t.panel).children(
         rows.into_iter().enumerate().map(|(i, row)| {
             div().flex().flex_col().when(i > 0, |d| d.border_t_1().border_color(t.border)).child(row)
@@ -515,7 +515,7 @@ fn group(rows: impl IntoIterator<Item = AnyElement>, t: Theme) -> gpui::Div {
 }
 
 /// A setting with its label and `detail` on the left; add the control as a child.
-fn row(label: &'static str, detail: Option<gpui::Div>, t: Theme) -> gpui::Div {
+pub fn row(label: &'static str, detail: Option<gpui::Div>, t: Theme) -> gpui::Div {
     div().flex().items_center().gap_4().min_h(px(52.)).px_4().py_2p5().child(
         div()
             .flex_1()
@@ -529,11 +529,11 @@ fn row(label: &'static str, detail: Option<gpui::Div>, t: Theme) -> gpui::Div {
 }
 
 /// A setting whose control is too wide for a row: the label on top, then the children.
-fn stacked(label: &'static str, t: Theme) -> gpui::Div {
+pub fn stacked(label: &'static str, t: Theme) -> gpui::Div {
     div().flex().flex_col().gap_2().px_4().py_3().child(div().text_sm().text_color(t.text).child(label))
 }
 
-fn error(text: impl Into<SharedString>, t: Theme) -> gpui::Div {
+pub fn error(text: impl Into<SharedString>, t: Theme) -> gpui::Div {
     div().text_xs().text_color(t.danger).child(text.into())
 }
 
@@ -596,24 +596,6 @@ pub fn nav_item(
         .when(!active, |d| d.text_color(t.text).hover(|d| d.bg(t.hover)))
         .child(svg().path(icon).size(px(15.)).text_color(if active { t.accent } else { t.muted }))
         .child(label)
-}
-
-/// A read-only path.
-pub fn path_box(path: String, t: Theme) -> impl IntoElement {
-    div()
-        .flex_1()
-        .min_w_0()
-        .h(px(30.))
-        .flex()
-        .items_center()
-        .px_2p5()
-        .rounded_md()
-        .border_1()
-        .border_color(t.border)
-        .bg(t.panel)
-        .text_sm()
-        .text_color(t.text)
-        .child(div().truncate().child(path))
 }
 
 pub fn segments(items: impl IntoIterator<Item = gpui::Stateful<gpui::Div>>, t: Theme) -> gpui::Div {

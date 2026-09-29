@@ -44,10 +44,6 @@ impl JavaField {
         JavaField { input, check: JavaCheck::Idle, empty_hint, reset_label }
     }
 
-    pub fn input(&self) -> &Entity<TextInput> {
-        &self.input
-    }
-
     pub fn text(&self, cx: &App) -> String {
         self.input.read(cx).text().trim().to_string()
     }

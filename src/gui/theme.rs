@@ -27,6 +27,20 @@ pub struct Theme {
     pub accent_soft: Hsla,
     pub on_accent: Hsla,
     pub danger: Hsla,
+    /// Play button and "running" marks.
+    pub success: Hsla,
+    pub warning: Hsla,
+}
+
+/// Font for logs.
+pub fn mono_font() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Menlo"
+    } else if cfg!(windows) {
+        "Consolas"
+    } else {
+        "DejaVu Sans Mono"
+    }
 }
 
 impl Theme {
@@ -57,6 +71,8 @@ impl Theme {
                 accent_soft: accent.opacity(0.16),
                 on_accent: rgb(0xffffff).into(),
                 danger: rgb(0xff6b6b).into(),
+                success: rgb(0x3fb96b).into(),
+                warning: rgb(0xe8b44c).into(),
             }
         } else {
             Theme {
@@ -73,6 +89,8 @@ impl Theme {
                 accent_soft: accent.opacity(0.09),
                 on_accent: rgb(0xffffff).into(),
                 danger: rgb(0xd92d20).into(),
+                success: rgb(0x1f9d55).into(),
+                warning: rgb(0xb7791f).into(),
             }
         }
     }

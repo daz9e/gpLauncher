@@ -818,11 +818,9 @@ impl Launcher {
                 )
                 .child(div().flex().gap_2().px_4().child(play).child({
                     let id = id.clone();
-                    ui::button("manage", Some("icons/sliders-horizontal.svg"), "", Style::Secondary, true, t)
+                    ui::button("manage", None, "Open", Style::Secondary, true, t)
                         .h(px(36.))
-                        .w(px(40.))
-                        .px_0()
-                        .tooltip(tooltip("Open the instance window"))
+                        .tooltip(tooltip("Mods, worlds, console and settings (⌘O)"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_window(id.clone(), Page::Content(Kind::Mods), cx)
                         }))

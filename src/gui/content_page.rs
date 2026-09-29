@@ -117,7 +117,10 @@ impl ContentPage {
         let generation = self.generation;
         cx.spawn(async move |this, cx| {
             let items = cx.background_spawn(async move { content::list(&inst, kind, &cache) }).await;
-            let to_identify = items.clone();
+            // Only files not looked up yet: the rest keep what Modrinth said before.
+            let known = this.update(cx, |this, _| this.identified.clone()).unwrap_or_default();
+            let to_identify: Vec<Item> =
+                items.iter().filter(|i| !known.contains_key(&i.path)).cloned().collect();
             let alive = this.update(cx, |this, cx| {
                 if this.generation != generation {
                     return false;
@@ -140,7 +143,9 @@ impl ContentPage {
                 if this.generation == generation
                     && let Ok(found) = identified
                 {
-                    this.identified = found;
+                    let paths: HashSet<&PathBuf> = this.items.iter().map(|i| &i.path).collect();
+                    this.identified.retain(|p, _| paths.contains(p));
+                    this.identified.extend(found);
                     this.sync_browser(cx);
                     cx.notify();
                 }
@@ -324,6 +329,10 @@ impl ContentPage {
     }
 
     fn update_items(&mut self, list: Vec<Update>, cx: &mut Context<Self>) {
+        // The new file may reuse the name; look it up again afterwards.
+        for u in &list {
+            self.identified.remove(&u.item.path);
+        }
         if let Updates::Found(found) = &mut self.updates {
             found.retain(|u| !list.iter().any(|x| x.item.path == u.item.path));
         }

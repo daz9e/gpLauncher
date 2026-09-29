@@ -8,6 +8,7 @@ pub mod content;
 pub mod curseforge;
 pub mod download;
 pub mod export;
+pub mod forge;
 pub mod http;
 pub mod import;
 pub mod install;

@@ -47,17 +47,20 @@ pub fn run(
 
     let root = &settings.data_dir;
     std::fs::create_dir_all(&instance.game_dir)?;
+    let java_path = [&instance.java_path, &settings.java_path]
+        .map(|p| p.trim())
+        .into_iter()
+        .find(|p| !p.is_empty())
+        .map(PathBuf::from);
     let had_loader_version = !instance.loader_version.is_empty();
-    let version_id = loader::prepare(root, instance, reporter)?;
+    let version_id = loader::prepare(root, instance, manifest, java_path.as_deref(), reporter)?;
     if !had_loader_version && !instance.loader_version.is_empty() {
         reporter.send(Event::InstanceUpdated(instance.clone()));
     }
     let prepared = install::install(root, &instance.game_dir, &version_id, manifest, reporter)?;
 
-    let java_path =
-        [&instance.java_path, &settings.java_path].map(|p| p.trim()).into_iter().find(|p| !p.is_empty());
     let java = match java_path {
-        Some(path) => PathBuf::from(path),
+        Some(path) => path,
         None => java::ensure(root, &prepared.java_component, prepared.java_major, reporter)?,
     };
 

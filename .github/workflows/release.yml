@@ -50,31 +50,33 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --bin gplauncher-gui --target aarch64-apple-darwin
+          cargo build --release --bin gplauncher-gui --target x86_64-apple-darwin
           mkdir -p out
-          for bin in gplauncher gplauncher-gui; do
-            lipo -create -output "out/$bin" \
-              "target/aarch64-apple-darwin/release/$bin" \
-              "target/x86_64-apple-darwin/release/$bin"
-          done
+          lipo -create -output out/gplauncher-gui \
+            target/aarch64-apple-darwin/release/gplauncher-gui \
+            target/x86_64-apple-darwin/release/gplauncher-gui
 
       - name: Build (Windows / Linux)
         if: runner.os != 'macOS'
         shell: bash
         run: |
-          cargo build --release
+          cargo build --release --bin gplauncher-gui
           mkdir -p out
-          cp target/release/gplauncher* out/ 2>/dev/null || true
-          rm -f out/*.d out/*.pdb
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/release/gplauncher-gui.exe out/gpLauncher.exe
+          else
+            cp target/release/gplauncher-gui out/gplauncher
+          fi
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
           VERSION="${{ steps.ver.outputs.tag }}"
+          BASE="gplauncher-$VERSION-${{ matrix.name }}"
           APP="out/gpLauncher.app"
           mkdir -p "$APP/Contents/MacOS"
-          cp out/gplauncher-gui out/gplauncher "$APP/Contents/MacOS/"
+          cp out/gplauncher-gui "$APP/Contents/MacOS/"
           cat > "$APP/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -91,16 +93,42 @@ jobs:
           EOF
           # Ad-hoc signature so Apple Silicon runs the universal binary.
           codesign --force --deep --sign - "$APP"
-          (cd out && ditto -c -k --keepParent gpLauncher.app "../gplauncher-$VERSION-${{ matrix.name }}.zip")
+
+          # Installer: disk image with the usual drag-to-Applications layout.
+          mkdir -p dmg
+          cp -R "$APP" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname gpLauncher -srcfolder dmg -format UDZO -ov "$BASE.dmg"
+
+          # Portable: the app plus the marker that keeps data next to it.
+          mkdir -p portable/gpLauncher
+          cp -R "$APP" portable/gpLauncher/
+          echo "Keeps launcher data in the data folder next to gpLauncher." > portable/gpLauncher/portable.txt
+          (cd portable && ditto -c -k --keepParent gpLauncher "../$BASE-portable.zip")
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path out/*.exe -DestinationPath "gplauncher-${{ steps.ver.outputs.tag }}-${{ matrix.name }}.zip"
+        run: |
+          $version = "${{ steps.ver.outputs.tag }}"
+          $base = "gplauncher-$version-${{ matrix.name }}"
+
+          # Installer.
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+            $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          iscc /Q "/DAppVersion=$($version.TrimStart('v'))" "/DBinDir=$PWD\out" "/DOutputName=$base-setup" "/O$PWD" packaging\windows\gplauncher.iss
+
+          # Portable: the exe plus the marker that keeps data next to it.
+          New-Item -ItemType Directory -Force portable\gpLauncher | Out-Null
+          Copy-Item out\gpLauncher.exe portable\gpLauncher\
+          Set-Content portable\gpLauncher\portable.txt "Keeps launcher data in the data folder next to gpLauncher.exe."
+          Compress-Archive -Path portable\gpLauncher -DestinationPath "$base-portable.zip"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: tar -czf "gplauncher-${{ steps.ver.outputs.tag }}-${{ matrix.name }}.tar.gz" -C out gplauncher gplauncher-gui
+        run: tar -czf "gplauncher-${{ steps.ver.outputs.tag }}-${{ matrix.name }}.tar.gz" -C out gplauncher
 
       - uses: actions/upload-artifact@v4
         with:

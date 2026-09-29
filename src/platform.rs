@@ -30,10 +30,14 @@ pub fn classpath_separator() -> &'static str {
 }
 
 /// Default launcher directory:
+/// - portable mode: `data` next to the launcher
 /// - Windows: `%APPDATA%\.gplauncher`
 /// - macOS: `~/Library/Application Support/gplauncher`
 /// - Linux: `~/.gplauncher`
 pub fn default_data_dir() -> PathBuf {
+    if let Some(dir) = portable_data_dir() {
+        return dir;
+    }
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     if cfg!(target_os = "windows") {
         dirs::data_dir().unwrap_or(home).join(".gplauncher")
@@ -42,4 +46,17 @@ pub fn default_data_dir() -> PathBuf {
     } else {
         home.join(".gplauncher")
     }
+}
+
+/// Portable mode is on when a `portable.txt` sits next to the launcher executable
+/// (next to the `.app` bundle on macOS); all data then lives in a `data` folder beside it.
+pub fn portable_data_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    if cfg!(target_os = "macos")
+        && let Some(bundle) = dir.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+    {
+        dir = bundle.parent()?;
+    }
+    dir.join("portable.txt").is_file().then(|| dir.join("data"))
 }

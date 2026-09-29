@@ -80,7 +80,13 @@ fn settings_path() -> PathBuf {
 
 impl Settings {
     pub fn load() -> Settings {
-        fs::read(settings_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let mut settings: Settings =
+            fs::read(settings_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // A portable copy may have been moved since the path was saved.
+        if let Some(dir) = platform::portable_data_dir() {
+            settings.data_dir = dir;
+        }
+        settings
     }
 
     /// Saves settings; the file holds account tokens, so it is owner-readable only.

@@ -46,6 +46,8 @@ pub struct LogView {
     /// Shown while there are no lines.
     empty: (SharedString, SharedString),
     uploading: bool,
+    /// For a session that has not run since the launcher started: the game's last log file.
+    fallback: Option<(Instant, Rc<Vec<LogLine>>)>,
 }
 
 impl LogView {
@@ -71,9 +73,42 @@ impl LogView {
             scrolled_up,
             empty: (empty.0.into(), empty.1.into()),
             uploading: false,
+            fallback: None,
         };
+        this.load_fallback(cx);
         this.sync(cx);
         this
+    }
+
+    /// Reads `logs/latest.log` of the instance when it has not run since the launcher started.
+    fn load_fallback(&mut self, cx: &mut Context<Self>) {
+        let Source::Session { state, id } = &self.source else { return };
+        let state = state.read(cx);
+        if state.sessions.contains_key(id) {
+            return;
+        }
+        let Some(path) = state.instance(id).map(|i| i.game_dir.join("logs/latest.log")) else { return };
+        cx.spawn(async move |this, cx| {
+            let Ok(text) = cx.background_spawn(async move { gplauncher::content::read_log(&path) }).await
+            else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.fallback = Some((Instant::now(), Rc::new(crate::state::log_lines(&text))));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Whether the lines come from the last run's log file rather than a launch.
+    fn showing_fallback(&self, cx: &App) -> bool {
+        match &self.source {
+            Source::Session { state, id } => {
+                !state.read(cx).sessions.contains_key(id) && self.fallback.is_some()
+            }
+            Source::Lines(_) => false,
+        }
     }
 
     /// Shows other fixed lines (another file).
@@ -90,7 +125,10 @@ impl LogView {
         match &self.source {
             Source::Session { state, id } => match state.read(cx).sessions.get(id) {
                 Some(s) => (&s.log, s.dropped, Some(s.started_at())),
-                None => (&[], 0, None),
+                None => match &self.fallback {
+                    Some((key, lines)) => (lines.as_slice(), 0, Some(*key)),
+                    None => (&[], 0, None),
+                },
             },
             Source::Lines(lines) => (lines.as_slice(), 0, Some(self.key.unwrap_or_else(Instant::now))),
         }
@@ -320,35 +358,57 @@ impl Render for LogView {
                 }),
             )
             .size_full()
+            .font_family(theme::mono_font())
+            .text_xs()
             .into_any_element()
         };
 
-        div().size_full().flex().flex_col().child(toolbar).child(
-            div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .py_1()
-                .bg(t.panel)
-                .font_family(theme::mono_font())
-                .text_xs()
-                .child(body)
-                .when(self.scrolled_up.get() && count > 0, |d| {
-                    d.child(
-                        div().absolute().bottom_3().right_4().child(
-                            ui::button(
-                                "jump-bottom",
-                                Some("icons/arrow-down.svg"),
-                                "Latest",
-                                Style::Secondary,
-                                true,
-                                t,
-                            )
-                            .shadow_md()
-                            .on_click(cx.listener(|this, _, _, cx| this.jump_to_bottom(cx))),
-                        ),
-                    )
-                }),
-        )
+        let fallback = self.showing_fallback(cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(toolbar)
+            .when(fallback, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px_3()
+                        .py_1p5()
+                        .border_b_1()
+                        .border_color(t.border)
+                        .bg(t.accent_soft)
+                        .text_xs()
+                        .text_color(t.muted)
+                        .child("From the last run (logs/latest.log). Press Play to see live output."),
+                )
+            })
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .py_1()
+                    .bg(t.panel)
+                    .font_family(theme::mono_font())
+                    .text_xs()
+                    .child(body)
+                    .when(self.scrolled_up.get() && count > 0, |d| {
+                        d.child(
+                            div().absolute().bottom_3().right_4().child(
+                                ui::button(
+                                    "jump-bottom",
+                                    Some("icons/arrow-down.svg"),
+                                    "Latest",
+                                    Style::Secondary,
+                                    true,
+                                    t,
+                                )
+                                .shadow_md()
+                                .on_click(cx.listener(|this, _, _, cx| this.jump_to_bottom(cx))),
+                            ),
+                        )
+                    }),
+            )
     }
 }

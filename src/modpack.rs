@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
 
 use crate::import::{self, Imported};
-use crate::instance::Loader;
+use crate::instance::{self, Loader};
 use crate::settings::Settings;
 use crate::{Reporter, curseforge, http, modrinth};
 
@@ -153,20 +153,34 @@ pub fn install(
         imported.instance.name = pack.title.trim().to_string();
         imported.instance.save()?;
     }
+    if let Some(url) = &pack.icon_url {
+        // A missing icon is not worth failing the install over.
+        let path = imported.instance.dir.join(instance::ICON_FILE);
+        if save_icon(url, &path, INSTANCE_ICON_SIZE).is_ok() {
+            imported.instance.icon = Some(path);
+        }
+    }
     Ok(imported)
 }
 
 /// Icons are stored as small static PNGs: platforms serve anything up to 1024px animated GIFs,
 /// which are slow to decode and keep the UI redrawing while they animate.
-const ICON_SIZE: u32 = 96;
+const LIST_ICON_SIZE: u32 = 96;
+/// Big enough for the largest instance tile on a 2x screen.
+const INSTANCE_ICON_SIZE: u32 = 192;
 
 /// Icon for `url` as a small PNG, cached under the launcher folder.
 pub fn icon(data_dir: &Path, url: &str) -> Result<PathBuf> {
     let name: String = Md5::digest(url.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
     let path = data_dir.join("cache/icons").join(format!("{name}.png"));
-    if path.is_file() {
-        return Ok(path);
+    if !path.is_file() {
+        save_icon(url, &path, LIST_ICON_SIZE)?;
     }
+    Ok(path)
+}
+
+/// Downloads an image, keeps its first frame, shrinks it to fit `size` and writes it as PNG.
+fn save_icon(url: &str, path: &Path, size: u32) -> Result<()> {
     let mut resp = http::agent().get(url).call().with_context(|| format!("GET {url}"))?;
     if !resp.status().is_success() {
         bail!("GET {url}: HTTP {}", resp.status());
@@ -174,17 +188,14 @@ pub fn icon(data_dir: &Path, url: &str) -> Result<PathBuf> {
     let bytes = resp.body_mut().with_config().limit(16 * 1024 * 1024).read_to_vec()?;
     // Decodes only the first frame of animated images.
     let image = image::load_from_memory(&bytes).context("decoding icon")?;
-    let image = if image.width() > ICON_SIZE || image.height() > ICON_SIZE {
-        image.thumbnail(ICON_SIZE, ICON_SIZE)
-    } else {
-        image
-    };
+    let image =
+        if image.width() > size || image.height() > size { image.thumbnail(size, size) } else { image };
     fs::create_dir_all(path.parent().unwrap())?;
     // Write to a temp file first so a half-written icon is never picked up.
     let tmp = path.with_extension("png.part");
     image.save_with_format(&tmp, image::ImageFormat::Png)?;
-    fs::rename(&tmp, &path)?;
-    Ok(path)
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 fn safe_file_name(name: &str) -> String {

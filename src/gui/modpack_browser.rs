@@ -405,6 +405,7 @@ impl ModpackBrowser {
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(t.text)
                                                 .line_clamp(2)
+                                                .text_ellipsis()
                                                 .child(pack.title.clone()),
                                         )
                                         .when(!pack.author.is_empty(), |d| {

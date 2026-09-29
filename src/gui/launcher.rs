@@ -1,7 +1,7 @@
 //! Main window: toolbar, instance grid, sidebar with actions for the selected instance, status bar.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -13,8 +13,9 @@ use gplauncher::launch::{self, GameHandle};
 use gplauncher::settings::Settings;
 use gplauncher::{Event, Reporter, modpack, version};
 use gpui::{
-    AnyElement, Context, Entity, ExternalPaths, FocusHandle, FontWeight, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, actions, div, prelude::*, px, relative, svg,
+    AnyElement, App, Context, Entity, ExternalPaths, FocusHandle, Font, FontWeight, IntoElement,
+    LineFragment, ParentElement, Pixels, Render, SharedString, Styled, TextRun, Window, actions, div, img,
+    prelude::*, px, relative, rems, svg,
 };
 
 use crate::add_instance::{self, AddInstance, AddInstanceEvent};
@@ -424,7 +425,10 @@ impl Launcher {
             )
     }
 
-    fn grid(&self, t: Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn grid(&self, t: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut name_font = window.text_style().font();
+        name_font.weight = FontWeight::MEDIUM;
+        let name_size = rems(0.875).to_pixels(window.rem_size());
         if self.instances.is_empty() {
             return div()
                 .flex_1()
@@ -465,47 +469,62 @@ impl Launcher {
                     )
                     .child(div().text_xs().text_color(t.subtle).child(self.instances.len().to_string())),
             )
-            .child(div().flex().flex_wrap().gap_2().children(self.instances.iter().map(|inst| {
-                let selected = self.selected.as_deref() == Some(inst.id.as_str());
-                let running = self.sessions.get(&inst.id).is_some_and(|s| s.phase != Phase::Finished);
-                let id = inst.id.clone();
-                div()
-                    .id(SharedString::from(format!("inst-{}", inst.id)))
-                    .w(px(TILE_WIDTH))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_2()
-                    .pt_3()
-                    .pb_2p5()
-                    .px_2()
-                    .rounded_lg()
-                    .border_1()
-                    .cursor_pointer()
-                    .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent.opacity(0.35)))
-                    .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|d| d.bg(t.hover)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
-                    .child(instance_icon(64., running, t))
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap_0p5()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(t.text)
-                                    .text_center()
-                                    .line_clamp(2)
-                                    .child(inst.name.clone()),
-                            )
-                            .child(div().text_xs().text_color(t.muted).child(short_description(inst))),
-                    )
-            })))
+            // Tiles keep their own height: the selected one grows with its full name.
+            .child(div().flex().flex_wrap().items_start().gap_2().children(self.instances.iter().map(
+                |inst| {
+                    let selected = self.selected.as_deref() == Some(inst.id.as_str());
+                    let running = self.sessions.get(&inst.id).is_some_and(|s| s.phase != Phase::Finished);
+                    let id = inst.id.clone();
+                    div()
+                        .id(SharedString::from(format!("inst-{}", inst.id)))
+                        .w(px(TILE_WIDTH))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_2()
+                        .pt_3()
+                        .pb_2p5()
+                        .px_2()
+                        .rounded_lg()
+                        .border_1()
+                        .cursor_pointer()
+                        .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent.opacity(0.35)))
+                        .when(!selected, |d| {
+                            d.border_color(gpui::transparent_black()).hover(|d| d.bg(t.hover))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)))
+                        .child(instance_icon(64., running, inst.icon.as_deref(), t))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap_0p5()
+                                // The selected tile shows the whole name, others two lines.
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(t.text)
+                                        .text_center()
+                                        .when(selected, |d| d.child(inst.name.clone()))
+                                        .when(!selected, |d| {
+                                            d.children(
+                                                clamp_lines(&inst.name, name_font.clone(), name_size, 2, cx)
+                                                    .into_iter()
+                                                    .map(|line| div().whitespace_nowrap().child(line)),
+                                            )
+                                        }),
+                                )
+                                .child(div().text_xs().text_color(t.muted).child(short_description(inst))),
+                        )
+                },
+            )))
             .into_any_element()
     }
 
@@ -536,14 +555,13 @@ impl Launcher {
                         .px_4()
                         .pt_6()
                         .pb_4()
-                        .child(instance_icon(80., running, t))
+                        .child(instance_icon(80., running, inst.icon.as_deref(), t))
                         .child(
                             div()
                                 .w_full()
                                 .text_center()
                                 .text_color(t.text)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .line_clamp(2)
                                 .child(inst.name.clone()),
                         ),
                 )
@@ -664,7 +682,7 @@ impl Render for Launcher {
                 cx.listener(|this, paths: &ExternalPaths, _, cx| this.import(paths.paths().to_vec(), cx)),
             )
             .child(self.toolbar(t, cx))
-            .child(div().flex_1().min_h_0().flex().child(self.grid(t, cx)).child(self.sidebar(t, cx)))
+            .child(div().flex_1().min_h_0().flex().child(self.grid(t, window, cx)).child(self.sidebar(t, cx)))
             .child(self.status_bar(t))
             .when_some(self.add_dialog.clone(), |d, dialog| {
                 d.child(
@@ -709,6 +727,36 @@ impl Summary {
     }
 }
 
+const TILE_TEXT_WIDTH: f32 = TILE_WIDTH - 2. * 8. - 2.;
+
+/// `text` wrapped to the tile width and cut to `max_lines`, the last line ending with "…".
+/// gpui's `line_clamp` only estimates this and lets a long last line overflow.
+fn clamp_lines(text: &str, font: Font, size: Pixels, max_lines: usize, cx: &App) -> Vec<SharedString> {
+    let width = px(TILE_TEXT_WIDTH);
+    let mut wrapper = cx.text_system().line_wrapper(font.clone(), size);
+    let fragments = [LineFragment::text(text)];
+    let mut starts = vec![0];
+    starts.extend(wrapper.wrap_line(&fragments, width).map(|b| b.ix));
+    let line = |range: std::ops::Range<usize>| SharedString::from(text[range].trim().to_string());
+    if starts.len() <= max_lines {
+        starts.push(text.len());
+        return starts.windows(2).map(|w| line(w[0]..w[1])).collect();
+    }
+    let mut lines: Vec<SharedString> =
+        starts.windows(2).take(max_lines - 1).map(|w| line(w[0]..w[1])).collect();
+    let rest = text[starts[max_lines - 1]..].trim();
+    let mut runs = vec![TextRun {
+        len: rest.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }];
+    lines.push(wrapper.truncate_line(rest.to_string().into(), width, "…", &mut runs));
+    lines
+}
+
 /// `1.21.1 · Fabric`, without the loader version.
 fn short_description(inst: &Instance) -> String {
     match inst.loader {
@@ -729,9 +777,9 @@ fn last_played(ts: u64) -> String {
     }
 }
 
-/// Placeholder until instances get their own icons.
-fn instance_icon(size: f32, running: bool, t: Theme) -> impl IntoElement {
-    div()
+/// The instance's own icon, or a placeholder. A running instance gets an accent border.
+fn instance_icon(size: f32, running: bool, icon: Option<&Path>, t: Theme) -> impl IntoElement {
+    let frame = div()
         .size(px(size))
         .flex_none()
         .flex()
@@ -741,11 +789,15 @@ fn instance_icon(size: f32, running: bool, t: Theme) -> impl IntoElement {
         .bg(t.tile)
         .border_1()
         .border_color(if running { t.accent } else { t.tile_edge })
-        .child(svg().path("icons/box.svg").size(px(size * 0.42)).text_color(if running {
+        .overflow_hidden();
+    match icon {
+        Some(path) => frame.child(img(path.to_path_buf()).size_full()),
+        None => frame.child(svg().path("icons/box.svg").size(px(size * 0.42)).text_color(if running {
             t.accent
         } else {
             t.subtle
-        }))
+        })),
+    }
 }
 
 fn avatar(name: &str, size: f32, t: Theme) -> impl IntoElement {

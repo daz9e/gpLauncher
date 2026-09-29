@@ -44,6 +44,9 @@ pub struct Instance {
     /// Working directory of the game.
     #[serde(skip)]
     pub game_dir: PathBuf,
+    /// [`ICON_FILE`] in the instance folder, when there is one.
+    #[serde(skip)]
+    pub icon: Option<PathBuf>,
     pub name: String,
     /// Minecraft version id (e.g. `1.20.1`) or any local version profile.
     pub minecraft: String,
@@ -90,6 +93,9 @@ impl Instance {
     }
 }
 
+/// Instance icon, next to `instance.json`.
+pub const ICON_FILE: &str = "icon.png";
+
 fn instances_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("instances")
 }
@@ -112,6 +118,7 @@ pub fn load(dir: &Path) -> Result<Instance> {
     inst.id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
     inst.dir = dir.to_path_buf();
     inst.game_dir = dir.join("minecraft");
+    inst.icon = Some(dir.join(ICON_FILE)).filter(|p| p.is_file());
     Ok(inst)
 }
 

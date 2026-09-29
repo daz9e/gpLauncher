@@ -138,6 +138,29 @@ impl Launcher {
         cx.notify();
     }
 
+    /// `add[:<loader>]`, `accounts` or `settings`: opens that dialog, for development.
+    #[cfg(debug_assertions)]
+    pub fn open_debug(&mut self, spec: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let mut parts = spec.split(':');
+        match parts.next() {
+            Some("add") => {
+                self.open_add_dialog(window, cx);
+                let loader = match parts.next() {
+                    Some("fabric") => Some(Loader::Fabric),
+                    Some("forge") => Some(Loader::Forge),
+                    Some("neoforge") => Some(Loader::NeoForge),
+                    _ => None,
+                };
+                if let (Some(dialog), Some(loader)) = (&self.add_dialog, loader) {
+                    dialog.update(cx, |d, cx| d.set_loader(loader, cx));
+                }
+            }
+            Some("accounts") => self.open_accounts_dialog(window, cx),
+            Some("settings") => self.open_settings(window, cx),
+            _ => {}
+        }
+    }
+
     fn open_accounts_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.accounts_dialog.is_some() {
             return;

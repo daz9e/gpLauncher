@@ -111,6 +111,9 @@ pub fn open(state: &State, id: &str, page: Page, cx: &mut App) {
 pub fn open_debug(state: &State, spec: &str, cx: &mut App) {
     let mut parts = spec.split(':');
     let (Some(id), page) = (parts.next(), parts.next().unwrap_or("console")) else { return };
+    if state.read(cx).instance(id).is_none() {
+        return;
+    }
     let page = match page {
         "mods" => Page::Content(Kind::Mods),
         "resourcepacks" => Page::Content(Kind::ResourcePacks),

@@ -94,6 +94,10 @@ fn main() {
                     if let Some(id) = shortcut::launch_arg() {
                         launcher.launch_id(&id, cx);
                     }
+                    #[cfg(debug_assertions)]
+                    if let Ok(spec) = std::env::var("GPLAUNCHER_OPEN") {
+                        launcher.open_debug(&spec, window, cx);
+                    }
                     launcher
                 })
             },

@@ -128,3 +128,15 @@ fn try_download(url: &str, path: &Path, sha1: Option<&str>, on_bytes: &dyn Fn(u6
     fs::rename(&tmp, path).with_context(|| format!("renaming to {}", path.display()))?;
     Ok(())
 }
+
+/// Uploads a log to mclo.gs and returns the link to it. Their service hides IP addresses;
+/// the launcher already keeps access tokens out of its log.
+pub fn upload_log(text: &str) -> Result<String> {
+    let url = "https://api.mclo.gs/1/log";
+    let resp = agent().post(url).send_form([("content", text)]).with_context(|| format!("POST {url}"))?;
+    let v = read_json(resp, url)?;
+    match v["url"].as_str() {
+        Some(link) if v["success"].as_bool() == Some(true) => Ok(link.to_string()),
+        _ => bail!("mclo.gs: {}", v["error"].as_str().unwrap_or("upload failed")),
+    }
+}

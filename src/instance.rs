@@ -44,7 +44,7 @@ pub struct Instance {
     /// Working directory of the game.
     #[serde(skip)]
     pub game_dir: PathBuf,
-    /// [`ICON_FILE`] in the instance folder, when there is one.
+    /// The icon file in the instance folder (see [`ICON_FILE`]), when there is one.
     #[serde(skip)]
     pub icon: Option<PathBuf>,
     pub name: String,
@@ -66,6 +66,8 @@ pub struct Instance {
     pub fullscreen: Option<bool>,
     /// Unix time of the last launch, for sorting.
     pub last_played: u64,
+    /// Seconds played in total.
+    pub play_time: u64,
     /// Group the instance is shown under; empty = ungrouped.
     pub group: String,
 }
@@ -101,14 +103,51 @@ impl Instance {
         Ok(())
     }
 
+    /// Uses the image at `source` as the icon, stored as a small PNG.
+    pub fn set_icon(&mut self, source: &Path) -> Result<()> {
+        let image = image::open(source).with_context(|| format!("{} is not an image", source.display()))?;
+        let image =
+            if image.width() > 256 || image.height() > 256 { image.thumbnail(256, 256) } else { image };
+        self.clear_icon()?;
+        // A new name each time: image caches key on the path.
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let path = self.dir.join(format!("icon-{stamp}.png"));
+        image.save_with_format(&path, image::ImageFormat::Png)?;
+        self.icon = Some(path);
+        Ok(())
+    }
+
+    pub fn clear_icon(&mut self) -> Result<()> {
+        for path in icon_files(&self.dir) {
+            fs::remove_file(&path).with_context(|| format!("deleting {}", path.display()))?;
+        }
+        self.icon = None;
+        Ok(())
+    }
+
     pub fn touch(&mut self) {
         self.last_played = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let _ = self.save();
     }
 }
 
-/// Instance icon, next to `instance.json`.
+/// Instance icon, next to `instance.json`. Icons chosen in the launcher are `icon-<time>.png`.
 pub const ICON_FILE: &str = "icon.png";
+
+fn icon_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            name == ICON_FILE || (name.starts_with("icon-") && name.ends_with(".png"))
+        })
+        .collect();
+    out.sort();
+    out
+}
 
 fn instances_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("instances")
@@ -132,7 +171,7 @@ pub fn load(dir: &Path) -> Result<Instance> {
     inst.id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
     inst.dir = dir.to_path_buf();
     inst.game_dir = dir.join("minecraft");
-    inst.icon = Some(dir.join(ICON_FILE)).filter(|p| p.is_file());
+    inst.icon = icon_files(dir).pop();
     Ok(inst)
 }
 
@@ -188,7 +227,7 @@ pub fn duplicate(data_dir: &Path, inst: &Instance, name: &str) -> Result<Instanc
     (copy.window_width, copy.window_height) = (inst.window_width, inst.window_height);
     copy.fullscreen = inst.fullscreen;
     copy.group = inst.group.clone();
-    copy.icon = inst.icon.as_ref().map(|_| copy.dir.join(ICON_FILE));
+    copy.icon = inst.icon.as_ref().and_then(|p| p.file_name()).map(|name| copy.dir.join(name));
     copy.save()?;
     Ok(copy)
 }

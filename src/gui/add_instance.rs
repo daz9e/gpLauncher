@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use gplauncher::forge::LoaderVersion;
 use gplauncher::instance::{self, Instance, Loader};
 use gplauncher::loader;
 use gplauncher::modpack::{Pack, PackVersion, Platform, Source};
@@ -14,6 +15,7 @@ use gpui::{
     div, prelude::*, px, svg, uniform_list,
 };
 
+use crate::dropdown::Dropdown;
 use crate::modpack_browser::ModpackBrowser;
 use crate::text_input::{self, TextInput};
 use crate::theme::Theme;
@@ -21,7 +23,8 @@ use crate::theme::Theme;
 actions!(add_instance, [Cancel, Confirm, SelectPrev, SelectNext]);
 
 const CONTEXT: &str = "AddInstance";
-const LOADERS: [Loader; 3] = [Loader::Vanilla, Loader::Fabric, Loader::Quilt];
+const LOADERS: [Loader; 5] =
+    [Loader::Vanilla, Loader::Fabric, Loader::Quilt, Loader::Forge, Loader::NeoForge];
 const ROW_HEIGHT: f32 = 30.;
 const NAV_WIDTH: f32 = 176.;
 const CURSEFORGE_CONSOLE: &str = "https://console.curseforge.com/";
@@ -81,6 +84,11 @@ pub struct AddInstance {
     selected: Option<String>,
     scroll: UniformListScrollHandle,
     error: Option<String>,
+    /// Loader builds by (loader, Minecraft version).
+    loader_versions: HashMap<(Loader, String), Lookup<Vec<LoaderVersion>>>,
+    /// A build picked for (loader, Minecraft version); anything else means the latest stable.
+    loader_version: Option<(Loader, String, String)>,
+    loader_menu: bool,
 }
 
 impl EventEmitter<AddInstanceEvent> for AddInstance {}
@@ -135,12 +143,15 @@ impl AddInstance {
             selected: None,
             scroll: UniformListScrollHandle::new(),
             error: None,
+            loader_versions: HashMap::new(),
+            loader_version: None,
+            loader_menu: false,
         };
         this.update_placeholder(cx);
         this
     }
 
-    fn set_loader(&mut self, loader: Loader, cx: &mut Context<Self>) {
+    pub fn set_loader(&mut self, loader: Loader, cx: &mut Context<Self>) {
         self.loader = loader;
         if let std::collections::hash_map::Entry::Vacant(slot) = self.supported.entry(loader) {
             slot.insert(None);
@@ -334,7 +345,8 @@ impl AddInstance {
             "" => self.default_name(),
             name => name.to_string(),
         };
-        match instance::create(&self.data_dir, &name, &minecraft, self.loader, "") {
+        let loader_version = self.chosen_loader_version().unwrap_or_default();
+        match instance::create(&self.data_dir, &name, &minecraft, self.loader, &loader_version) {
             Ok(inst) => cx.emit(AddInstanceEvent::Created(inst)),
             Err(e) => {
                 self.error = Some(format!("{e:#}"));
@@ -472,17 +484,96 @@ impl AddInstance {
             .child(body)
     }
 
-    fn loader_note(&self, t: Theme) -> Option<impl IntoElement> {
-        let text = match self.supported.get(&self.loader) {
-            Some(Some(Err(_))) => {
-                format!("Could not check which versions {} supports; showing all.", self.loader.label())
-            }
-            _ if self.loader != Loader::Vanilla => {
-                format!("The latest stable {} is installed on first launch.", self.loader.label())
-            }
-            _ => return None,
+    /// The loader build picked for the current loader and version; `None` = latest stable.
+    fn chosen_loader_version(&self) -> Option<String> {
+        let (loader, mc, version) = self.loader_version.as_ref()?;
+        (*loader == self.loader && Some(mc) == self.selected.as_ref()).then(|| version.clone())
+    }
+
+    /// Loads the builds of the current loader for the selected version, once.
+    fn ensure_loader_versions(&mut self, cx: &mut Context<Self>) {
+        let Some(mc) = self.selected.clone() else { return };
+        if self.loader == Loader::Vanilla {
+            return;
+        }
+        let key = (self.loader, mc);
+        if self.loader_versions.contains_key(&key) {
+            return;
+        }
+        self.loader_versions.insert(key.clone(), None);
+        cx.spawn(async move |this, cx| {
+            let (loader, mc) = key.clone();
+            let result = cx.background_spawn(async move { loader::versions(loader, &mc) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.loader_versions.insert(key, Some(result.map_err(|e| format!("{e:#}"))));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn loader_row(&mut self, t: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.loader == Loader::Vanilla {
+            return None;
+        }
+        let label = self.loader.label();
+        let unchecked = matches!(self.supported.get(&self.loader), Some(Some(Err(_))));
+        let note = |text: String| div().text_xs().text_color(t.muted).child(text);
+        let Some(mc) = self.selected.clone() else {
+            return Some(
+                note(format!("Pick a Minecraft version to see the {label} builds.")).into_any_element(),
+            );
         };
-        Some(div().text_xs().text_color(t.muted).child(text))
+        self.ensure_loader_versions(cx);
+        let chosen = self.chosen_loader_version();
+        let builds = match self.loader_versions.get(&(self.loader, mc.clone())) {
+            Some(Some(Ok(list))) => list.iter().take(80).cloned().collect::<Vec<_>>(),
+            Some(Some(Err(e))) => {
+                return Some(note(format!("Could not load {label} builds: {e}")).into_any_element());
+            }
+            _ => return Some(note(format!("Loading {label} builds for {mc}…")).into_any_element()),
+        };
+        if builds.is_empty() {
+            return Some(
+                div()
+                    .text_xs()
+                    .text_color(t.danger)
+                    .child(format!("{label} has no builds for Minecraft {mc}"))
+                    .into_any_element(),
+            );
+        }
+        let value = chosen.clone().unwrap_or_else(|| "Latest stable".into());
+        let (loader, picks) = (self.loader, builds.clone());
+        let dropdown = Dropdown::new("loader-build", "Build", value, t)
+            .options(std::iter::once((SharedString::from("Latest stable"), chosen.is_none())).chain(
+                builds.iter().map(|b| {
+                    let text = if b.stable { b.version.clone() } else { format!("{} (beta)", b.version) };
+                    (SharedString::from(text), chosen.as_deref() == Some(b.version.as_str()))
+                }),
+            ))
+            .open(self.loader_menu)
+            .on_toggle(cx.listener(|this, _, _, cx| {
+                this.loader_menu = !this.loader_menu;
+                cx.notify();
+            }))
+            .on_dismiss(cx.listener(|this, _, _, cx| {
+                this.loader_menu = false;
+                cx.notify();
+            }))
+            .on_select(cx.processor(move |this, ix: usize, _, cx| {
+                this.loader_menu = false;
+                this.loader_version = ix
+                    .checked_sub(1)
+                    .and_then(|i| picks.get(i))
+                    .map(|b| (loader, mc.clone(), b.version.clone()));
+                cx.notify();
+            }));
+        let hint = match (chosen.is_some(), unchecked) {
+            (_, true) => format!("Could not check which versions {label} supports; showing all."),
+            (false, _) => format!("The newest stable {label} build is installed on first launch."),
+            (true, _) => format!("This {label} build is installed on first launch."),
+        };
+        Some(div().flex().items_center().gap_3().child(dropdown).child(note(hint)).into_any_element())
     }
 }
 
@@ -533,7 +624,7 @@ impl AddInstance {
             }))
     }
 
-    fn custom_page(&self, t: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn custom_page(&mut self, t: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
@@ -541,7 +632,7 @@ impl AddInstance {
             .gap_4()
             .p_5()
             .child(field("Name", t).child(self.name.clone()))
-            .child(field("Mod loader", t).child(self.loader_picker(t, cx)).children(self.loader_note(t)))
+            .child(field("Mod loader", t).child(self.loader_picker(t, cx)).children(self.loader_row(t, cx)))
             .child(
                 field("Minecraft version", t)
                     .flex_1()

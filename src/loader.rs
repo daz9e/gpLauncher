@@ -71,13 +71,13 @@ pub fn prepare(
     Ok(id)
 }
 
-/// Minecraft versions the loader has builds for, or `None` when it cannot be told
-/// (vanilla, or loaders without a meta server).
+/// Minecraft versions the loader has builds for, or `None` for vanilla.
 pub fn supported_versions(loader: Loader) -> Result<Option<HashSet<String>>> {
     let meta = match loader {
         Loader::Fabric => FABRIC_META,
         Loader::Quilt => QUILT_META,
-        _ => return Ok(None),
+        Loader::Forge | Loader::NeoForge => return forge::supported_minecraft(loader).map(Some),
+        Loader::Vanilla => return Ok(None),
     };
     let list = http::get_json(&format!("{meta}/versions/game"))?;
     let entries = list.as_array().context("game version list is not an array")?;

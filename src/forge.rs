@@ -424,6 +424,28 @@ pub fn versions(loader: Loader, mc: &str) -> Result<Vec<LoaderVersion>> {
     }
 }
 
+/// Minecraft versions Forge or NeoForge has builds for.
+pub fn supported_minecraft(loader: Loader) -> Result<std::collections::HashSet<String>> {
+    Ok(match loader {
+        Loader::Forge => {
+            maven_versions(&format!("{FORGE_MAVEN}net/minecraftforge/forge/maven-metadata.xml"))?
+                .iter()
+                .filter_map(|v| v.split_once('-').map(|(mc, _)| mc.to_string()))
+                .collect()
+        }
+        Loader::NeoForge => {
+            let mut set: std::collections::HashSet<String> =
+                maven_versions(&format!("{NEOFORGE_MAVEN}net/neoforged/neoforge/maven-metadata.xml"))?
+                    .iter()
+                    .filter_map(|v| neoforge_minecraft(v))
+                    .collect();
+            set.insert("1.20.1".into());
+            set
+        }
+        _ => Default::default(),
+    })
+}
+
 /// The Minecraft version a NeoForge version is for: `20.4.237` → `1.20.4`, `21.0.1` → `1.21`,
 /// and from the year-based scheme on `26.1.2.5` → `26.1.2`, `26.3.0.21-beta` → `26.3`.
 fn neoforge_minecraft(version: &str) -> Option<String> {

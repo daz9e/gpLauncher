@@ -1,6 +1,16 @@
 //! Neutral palette; the accent is reserved for selection and the primary action.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use gplauncher::settings::Appearance;
 use gpui::{Hsla, WindowAppearance, rgb};
+
+/// The appearance chosen in the settings; read by every [`Theme::for_appearance`].
+static APPEARANCE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_appearance(appearance: Appearance) {
+    APPEARANCE.store(appearance as u8, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -20,7 +30,13 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Palette for the system `appearance`, unless the settings force light or dark.
     pub fn for_appearance(appearance: WindowAppearance) -> Theme {
+        let appearance = match APPEARANCE.load(Ordering::Relaxed) {
+            x if x == Appearance::Light as u8 => WindowAppearance::Light,
+            x if x == Appearance::Dark as u8 => WindowAppearance::Dark,
+            _ => appearance,
+        };
         let (accent, dark) = match appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => (rgb(0x4c8dff).into(), true),
             WindowAppearance::Light | WindowAppearance::VibrantLight => (rgb(0x2f6bef).into(), false),

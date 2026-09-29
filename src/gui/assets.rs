@@ -13,12 +13,15 @@ macro_rules! icons {
 
 const ICONS: &[(&str, &[u8])] = icons![
     "box",
+    "check",
     "chevron-down",
     "chevron-right",
+    "coffee",
     "copy",
     "folder",
     "globe",
     "modrinth",
+    "monitor",
     "pencil",
     "play",
     "plus",

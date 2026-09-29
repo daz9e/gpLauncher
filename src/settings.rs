@@ -25,6 +25,32 @@ pub struct Settings {
     pub curseforge_api_key: String,
     pub accounts: Vec<Account>,
     pub selected_account: usize,
+    /// Game window size; `None` = the game's default.
+    pub window_width: Option<u32>,
+    pub window_height: Option<u32>,
+    pub fullscreen: bool,
+    pub appearance: Appearance,
+    pub on_launch: OnLaunch,
+}
+
+/// Color scheme of the launcher.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// What the launcher window does once the game has started.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnLaunch {
+    #[default]
+    KeepOpen,
+    /// Minimize, and bring the launcher back when the game exits.
+    Minimize,
 }
 
 impl Default for Settings {
@@ -39,6 +65,11 @@ impl Default for Settings {
             curseforge_api_key: String::new(),
             accounts: Vec::new(),
             selected_account: 0,
+            window_width: None,
+            window_height: None,
+            fullscreen: false,
+            appearance: Appearance::default(),
+            on_launch: OnLaunch::default(),
         }
     }
 }
@@ -83,6 +114,11 @@ impl Settings {
         let key = std::env::var("CURSEFORGE_API_KEY").unwrap_or_else(|_| self.curseforge_api_key.clone());
         let key = key.trim();
         (!key.is_empty()).then(|| key.to_string())
+    }
+
+    /// Width and height when both are set.
+    pub fn resolution(&self) -> Option<(u32, u32)> {
+        self.window_width.zip(self.window_height)
     }
 
     pub fn account(&self) -> Option<&Account> {

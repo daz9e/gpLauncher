@@ -175,7 +175,7 @@ pub fn build_command(
         .collect::<Vec<_>>()
         .join(platform::classpath_separator());
 
-    let vars: HashMap<&str, String> = HashMap::from([
+    let mut vars: HashMap<&str, String> = HashMap::from([
         ("auth_player_name", account.name.clone()),
         ("version_name", p.id.clone()),
         ("game_directory", game_dir.to_string_lossy().into()),
@@ -197,7 +197,12 @@ pub fn build_command(
         ("classpath_separator", platform::classpath_separator().into()),
         ("library_directory", settings.data_dir.join("libraries").to_string_lossy().into()),
     ]);
-    let features: HashMap<&str, bool> = HashMap::new();
+    let mut features: HashMap<&str, bool> = HashMap::new();
+    if let Some((width, height)) = settings.resolution() {
+        features.insert("has_custom_resolution", true);
+        vars.insert("resolution_width", width.to_string());
+        vars.insert("resolution_height", height.to_string());
+    }
 
     let memory = instance.memory_mb.unwrap_or(settings.memory_mb);
     let mut jvm = vec![
@@ -225,6 +230,14 @@ pub fn build_command(
         game.extend(
             v["minecraftArguments"].as_str().unwrap_or_default().split_whitespace().map(String::from),
         );
+        if settings.resolution().is_some() {
+            game.extend(
+                ["--width", "${resolution_width}", "--height", "${resolution_height}"].map(String::from),
+            );
+        }
+    }
+    if settings.fullscreen {
+        game.push("--fullscreen".into());
     }
     if let Some(arg) = &p.logging_arg {
         jvm.push(arg.clone());

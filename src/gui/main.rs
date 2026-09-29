@@ -7,6 +7,7 @@ mod dropdown;
 mod edit_instance;
 mod launcher;
 mod modpack_browser;
+mod settings_dialog;
 mod shortcut;
 mod text_input;
 mod theme;
@@ -17,7 +18,7 @@ use gpui::{
 };
 
 use crate::assets::Assets;
-use crate::launcher::{FocusSearch, Launcher, NewInstance};
+use crate::launcher::{FocusSearch, Launcher, NewInstance, OpenSettings};
 
 actions!(gplauncher, [Quit]);
 
@@ -28,13 +29,22 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", NewInstance, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
         ]);
         text_input::bind_keys(cx);
         accounts::bind_keys(cx);
         add_instance::bind_keys(cx);
         edit_instance::bind_keys(cx);
+        settings_dialog::bind_keys(cx);
         cx.set_menus(vec![
-            Menu { name: "gpLauncher".into(), items: vec![MenuItem::action("Quit", Quit)] },
+            Menu {
+                name: "gpLauncher".into(),
+                items: vec![
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit", Quit),
+                ],
+            },
             Menu { name: "File".into(), items: vec![MenuItem::action("Add Instance…", NewInstance)] },
         ]);
         cx.on_window_closed(|cx| {
@@ -57,7 +67,7 @@ fn main() {
                 cx.new(|cx| {
                     let mut launcher = Launcher::new(window, cx);
                     if let Some(id) = shortcut::launch_arg() {
-                        launcher.launch_id(&id, cx);
+                        launcher.launch_id(&id, window, cx);
                     }
                     launcher
                 })

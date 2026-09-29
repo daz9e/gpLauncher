@@ -10,7 +10,7 @@ use gplauncher::auth::Account;
 use gplauncher::import::{self, Imported};
 use gplauncher::instance::{self, Instance, Loader};
 use gplauncher::launch::{self, GameHandle};
-use gplauncher::settings::Settings;
+use gplauncher::settings::{OnLaunch, Settings};
 use gplauncher::{Event, Reporter, export, modpack, version};
 use gpui::{
     AnyElement, AnyView, App, Context, Entity, ExternalPaths, FocusHandle, Focusable, Font, FontWeight,
@@ -21,11 +21,12 @@ use gpui::{
 use crate::accounts::{self, Accounts, AccountsEvent};
 use crate::add_instance::{self, AddInstance, AddInstanceEvent};
 use crate::edit_instance::{self, EditInstance, EditInstanceEvent};
+use crate::settings_dialog::{SettingsDialog, SettingsEvent};
 use crate::shortcut;
 use crate::text_input::{self, TextInput};
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 
-actions!(launcher, [NewInstance, FocusSearch]);
+actions!(launcher, [NewInstance, FocusSearch, OpenSettings]);
 
 const TOOLBAR_HEIGHT: f32 = 44.;
 const SIDEBAR_WIDTH: f32 = 248.;
@@ -75,6 +76,7 @@ pub struct Launcher {
     add_dialog: Option<Entity<AddInstance>>,
     edit_dialog: Option<Entity<EditInstance>>,
     accounts_dialog: Option<Entity<Accounts>>,
+    settings_dialog: Option<Entity<SettingsDialog>>,
     job: Option<Job>,
     /// Groups folded in the grid.
     collapsed: HashSet<String>,
@@ -86,6 +88,7 @@ impl Launcher {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe_window_appearance(window, |_, _, cx| cx.notify()).detach();
         let settings = Settings::load();
+        theme::set_appearance(settings.appearance);
         let instances = instance::list(&settings.data_dir);
         let selected = instances.first().map(|i| i.id.clone());
         let manual_downloads = instances
@@ -107,6 +110,7 @@ impl Launcher {
             add_dialog: None,
             edit_dialog: None,
             accounts_dialog: None,
+            settings_dialog: None,
             job: None,
             collapsed: HashSet::new(),
             manual_downloads,
@@ -187,6 +191,59 @@ impl Launcher {
         cx.notify();
     }
 
+    fn open_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal().is_some() {
+            return;
+        }
+        let busy =
+            self.job.as_ref().is_some_and(|j| j.active) || self.sessions.keys().any(|id| self.is_running(id));
+        let settings = self.settings.clone();
+        let dialog = cx.new(|cx| SettingsDialog::new(settings, busy, window, cx));
+        cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
+            if let SettingsEvent::Saved(settings) = event {
+                this.apply_settings(settings.clone(), window, cx);
+            }
+            this.settings_dialog = None;
+            window.focus(&this.focus_handle);
+            cx.notify();
+        })
+        .detach();
+        self.settings_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn apply_settings(&mut self, mut settings: Settings, window: &mut Window, cx: &mut Context<Self>) {
+        // Accounts may have been refreshed by a running launch meanwhile.
+        settings.accounts = std::mem::take(&mut self.settings.accounts);
+        settings.selected_account = self.settings.selected_account;
+        let moved = settings.data_dir != self.settings.data_dir;
+        self.settings = settings;
+        theme::set_appearance(self.settings.appearance);
+        window.refresh();
+        if let Err(e) = self.settings.save() {
+            self.notice(format!("Could not save settings: {e:#}"), cx);
+        }
+        if moved {
+            self.reload_instances(cx);
+        }
+    }
+
+    /// Reads the instances again, after the launcher folder changed.
+    fn reload_instances(&mut self, cx: &mut Context<Self>) {
+        self.instances = instance::list(&self.settings.data_dir);
+        self.sessions.clear();
+        self.collapsed.clear();
+        self.manual_downloads = self
+            .instances
+            .iter()
+            .filter(|i| i.dir.join(import::BLOCKED_LIST).is_file())
+            .map(|i| i.id.clone())
+            .collect();
+        self.selected = self.instances.first().map(|i| i.id.clone());
+        let count = self.instances.len();
+        self.notice(format!("Using {} ({count} instances)", self.settings.data_dir.display()), cx);
+    }
+
     /// Puts a new instance at the front of the grid and selects it.
     fn add_instance(&mut self, inst: Instance, cx: &mut Context<Self>) {
         self.instances.retain(|i| i.id != inst.id);
@@ -196,11 +253,11 @@ impl Launcher {
     }
 
     /// Selects the instance with `id` and launches it (for `--launch` shortcuts).
-    pub fn launch_id(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub fn launch_id(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.instances.iter().any(|i| i.id == id) {
             true => {
                 self.select(id.to_string(), cx);
-                self.launch(cx);
+                self.launch(window, cx);
             }
             false => self.notice(format!("No instance \"{id}\" to launch"), cx),
         }
@@ -440,7 +497,7 @@ impl Launcher {
         self.selected().is_some_and(|i| self.sessions.get(&i.id).is_some_and(|s| s.phase == Phase::Running))
     }
 
-    fn launch(&mut self, cx: &mut Context<Self>) {
+    fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_launch() {
             return;
         }
@@ -474,10 +531,10 @@ impl Launcher {
             let _ = tx.unbounded_send(Msg::Done(result.map_err(|e| format!("{e:#}"))));
         });
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.next().await {
-                let alive = this.update(cx, |this, cx| {
-                    this.apply(&id, msg);
+                let alive = this.update_in(cx, |this, window, cx| {
+                    this.apply(&id, msg, window);
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -500,7 +557,7 @@ impl Launcher {
         }
     }
 
-    fn apply(&mut self, id: &str, msg: Msg) {
+    fn apply(&mut self, id: &str, msg: Msg, window: &mut Window) {
         match msg {
             Msg::Event(Event::AccountRefreshed(account)) => {
                 // Matched by UUID: the selection may have changed since the launch started.
@@ -528,8 +585,14 @@ impl Launcher {
                         session.phase = Phase::Running;
                         session.status = "Playing".into();
                         session.progress = None;
+                        if self.settings.on_launch == OnLaunch::Minimize {
+                            window.minimize_window();
+                        }
                     }
                     Msg::Event(Event::GameExited(code)) => {
+                        if self.settings.on_launch == OnLaunch::Minimize {
+                            window.activate_window();
+                        }
                         session.status = match code {
                             Some(0) => "Game closed".into(),
                             Some(code) => format!("Game exited with code {code}"),
@@ -574,7 +637,10 @@ impl Launcher {
                     cx.open_with_system(&data_dir);
                 },
             ))
-            .child(toolbar_button("settings", "icons/settings.svg", "Settings", false, t))
+            .child(
+                toolbar_button("settings", "icons/settings.svg", "Settings", true, t)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_settings_dialog(window, cx))),
+            )
             .child(div().flex_1())
             .child(div().w(px(240.)).min_w(px(120.)).flex_shrink().child(self.search.clone()))
             .child(
@@ -760,10 +826,10 @@ impl Launcher {
             .cursor_pointer()
             .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent.opacity(0.35)))
             .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|d| d.bg(t.hover)))
-            .on_click(cx.listener(move |this, e: &gpui::ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
                 this.select(id.clone(), cx);
                 if e.click_count() == 2 {
-                    this.launch(cx);
+                    this.launch(window, cx);
                 }
             }))
             .child(instance_icon(64., running, inst.icon.as_deref(), t))
@@ -849,7 +915,7 @@ impl Launcher {
                             action_button("launch", "icons/play.svg", "Launch", can_launch, true, t)
                                 .flex_1()
                                 .when(can_launch, |b| {
-                                    b.on_click(cx.listener(|this, _, _, cx| this.launch(cx)))
+                                    b.on_click(cx.listener(|this, _, window, cx| this.launch(window, cx)))
                                 }),
                         )
                         .child(
@@ -996,6 +1062,7 @@ impl Launcher {
         let edit = self.edit_dialog.clone().map(AnyView::from);
         edit.or_else(|| self.add_dialog.clone().map(AnyView::from))
             .or_else(|| self.accounts_dialog.clone().map(AnyView::from))
+            .or_else(|| self.settings_dialog.clone().map(AnyView::from))
     }
 }
 
@@ -1011,6 +1078,9 @@ impl Render for Launcher {
             .text_color(t.text)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &NewInstance, window, cx| this.open_add_dialog(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings_dialog(window, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &FocusSearch, window, cx| window.focus(&this.search.focus_handle(cx))),
             )

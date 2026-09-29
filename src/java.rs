@@ -36,6 +36,26 @@ fn java_exe(runtime_dir: &Path) -> PathBuf {
     }
 }
 
+/// First line of `java -version`, e.g. `openjdk version "21.0.3" 2024-04-16`.
+pub fn version(java: &Path) -> Result<String> {
+    let mut cmd = std::process::Command::new(java);
+    cmd.arg("-version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().with_context(|| format!("failed to run {}", java.display()))?;
+    // Java prints the version to stderr.
+    let text = String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr });
+    match text.lines().map(str::trim).find(|l| !l.is_empty()) {
+        Some(line) if out.status.success() => Ok(line.to_string()),
+        Some(line) => bail!("{line}"),
+        None => bail!("{} printed no version", java.display()),
+    }
+}
+
 /// Ensures runtime `component` is installed under `<root>/runtimes` and returns the java binary.
 pub fn ensure(root: &Path, component: &str, major: u32, reporter: &Reporter) -> Result<PathBuf> {
     let dir = root.join("runtimes").join(component);
@@ -57,7 +77,7 @@ pub fn ensure(root: &Path, component: &str, major: u32, reporter: &Reporter) -> 
     let Some(manifest_ref) = manifest_ref else {
         bail!(
             "Mojang does not provide Java {major} ({component}) for this platform. \
-             Install Java {major} manually and set `java_path` in the settings."
+             Install Java {major} manually and choose it in Settings → Java."
         );
     };
     let manifest_sha1 = manifest_ref["sha1"].as_str().unwrap_or_default().to_string();

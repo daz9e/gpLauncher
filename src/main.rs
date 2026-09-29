@@ -12,8 +12,8 @@ use gplauncher::{Event, Reporter, import, launch, version};
 const USAGE: &str = "\
 Usage:
   gplauncher launch [INSTANCE|VERSION] [--user NAME]
-      Launch an instance, or a plain version from the game folder, with an offline account.
-      Defaults to the latest release.
+      Launch an instance, or a plain version from the game folder. Defaults to the latest release.
+      Plays as the account selected in the launcher, or offline as NAME with --user.
   gplauncher import FILE...
       Import .mrpack (Modrinth), CurseForge .zip or MultiMC/Prism .zip modpacks as new instances.
       CurseForge packs need an API key in CURSEFORGE_API_KEY or the launcher settings.
@@ -59,18 +59,20 @@ fn stdout_reporter() -> Reporter {
 
 fn cmd_launch(args: &[String]) -> Result<()> {
     let mut target = None;
-    let mut user = "Player".to_string();
+    let mut user = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--user" => match it.next() {
-                Some(name) => user = name.clone(),
+                Some(name) => user = Some(name.clone()),
                 None => bail!("--user needs a value"),
             },
             v => target = Some(v.to_string()),
         }
     }
-    if !auth::valid_offline_name(&user) {
+    if let Some(user) = &user
+        && !auth::valid_offline_name(user)
+    {
         bail!("invalid player name {user:?}: use 3-16 characters, letters, digits and `_`");
     }
 
@@ -84,9 +86,29 @@ fn cmd_launch(args: &[String]) -> Result<()> {
         .into_iter()
         .find(|i| i.name == target || i.id == target)
         .unwrap_or_else(|| Instance::ephemeral(&target, settings.game_dir()));
-    settings.accounts = vec![Account::offline(&user)];
-    settings.selected_account = 0;
-    launch::run(&settings, &mut instance, &manifest, &stdout_reporter(), &launch::GameHandle::default())
+    if user.is_some() || settings.account().is_none() {
+        settings.accounts = vec![Account::offline(user.as_deref().unwrap_or("Player"))];
+        settings.selected_account = 0;
+    }
+    let stdout = stdout_reporter();
+    let reporter = Reporter::new(move |event| match event {
+        Event::AccountRefreshed(account) => save_account(account),
+        event => stdout.send(event),
+    });
+    launch::run(&settings, &mut instance, &manifest, &reporter, &launch::GameHandle::default())
+}
+
+/// Stores a refreshed Microsoft account back into the launcher settings.
+fn save_account(account: Account) {
+    let mut settings = Settings::load();
+    if let Some(slot) =
+        settings.accounts.iter_mut().find(|a| a.kind == account.kind && a.uuid == account.uuid)
+    {
+        *slot = account;
+        if let Err(e) = settings.save() {
+            eprintln!("warning: could not save the refreshed account: {e:#}");
+        }
+    }
 }
 
 fn cmd_import(files: &[String]) -> Result<()> {

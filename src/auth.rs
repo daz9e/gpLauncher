@@ -99,12 +99,22 @@ pub fn request_device_code(client_id: &str) -> Result<DeviceCode> {
     })
 }
 
-/// Blocks until the user finishes signing in (or the code expires).
-pub fn complete_device_code(client_id: &str, code: &DeviceCode) -> Result<Account> {
+/// Blocks until the user finishes signing in, the code expires or `cancelled` returns true.
+pub fn complete_device_code(
+    client_id: &str,
+    code: &DeviceCode,
+    cancelled: impl Fn() -> bool,
+) -> Result<Account> {
     let deadline = now() + code.expires_in;
     let mut interval = code.interval;
     loop {
-        std::thread::sleep(Duration::from_secs(interval));
+        // Sleep in small steps so a cancel is noticed quickly.
+        for _ in 0..interval * 4 {
+            if cancelled() {
+                bail!("sign-in was cancelled");
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
         if now() > deadline {
             bail!("sign-in timed out");
         }

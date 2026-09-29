@@ -18,6 +18,7 @@ use gpui::{
     Window, actions, div, img, prelude::*, px, relative, rems, svg,
 };
 
+use crate::accounts::{self, Accounts, AccountsEvent};
 use crate::add_instance::{self, AddInstance, AddInstanceEvent};
 use crate::edit_instance::{self, EditInstance, EditInstanceEvent};
 use crate::shortcut;
@@ -73,6 +74,7 @@ pub struct Launcher {
     search: Entity<TextInput>,
     add_dialog: Option<Entity<AddInstance>>,
     edit_dialog: Option<Entity<EditInstance>>,
+    accounts_dialog: Option<Entity<Accounts>>,
     job: Option<Job>,
     /// Groups folded in the grid.
     collapsed: HashSet<String>,
@@ -104,6 +106,7 @@ impl Launcher {
             search,
             add_dialog: None,
             edit_dialog: None,
+            accounts_dialog: None,
             job: None,
             collapsed: HashSet::new(),
             manual_downloads,
@@ -149,6 +152,38 @@ impl Launcher {
         })
         .detach();
         self.add_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn open_accounts_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accounts_dialog.is_some() {
+            return;
+        }
+        let s = &self.settings;
+        let (accounts, selected, client_id) =
+            (s.accounts.clone(), s.selected_account, s.ms_client_id.clone());
+        let dialog = cx.new(|cx| Accounts::new(accounts, selected, client_id, window, cx));
+        cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
+            match event {
+                AccountsEvent::Changed { accounts, selected } => {
+                    this.settings.accounts = accounts.clone();
+                    this.settings.selected_account = *selected;
+                }
+                AccountsEvent::SaveClientId(id) => this.settings.ms_client_id = id.clone(),
+                AccountsEvent::Dismissed => {
+                    this.accounts_dialog = None;
+                    window.focus(&this.focus_handle);
+                    cx.notify();
+                    return;
+                }
+            }
+            if let Err(e) = this.settings.save() {
+                this.notice(format!("Could not save settings: {e:#}"), cx);
+            }
+            cx.notify();
+        })
+        .detach();
+        self.accounts_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -468,7 +503,11 @@ impl Launcher {
     fn apply(&mut self, id: &str, msg: Msg) {
         match msg {
             Msg::Event(Event::AccountRefreshed(account)) => {
-                if let Some(slot) = self.settings.accounts.get_mut(self.settings.selected_account) {
+                // Matched by UUID: the selection may have changed since the launch started.
+                let accounts = &mut self.settings.accounts;
+                if let Some(slot) =
+                    accounts.iter_mut().find(|a| a.kind == account.kind && a.uuid == account.uuid)
+                {
                     *slot = account;
                     let _ = self.settings.save();
                 }
@@ -540,20 +579,25 @@ impl Launcher {
             .child(div().w(px(240.)).min_w(px(120.)).flex_shrink().child(self.search.clone()))
             .child(
                 div()
+                    .id("account")
                     .flex()
                     .flex_none()
                     .items_center()
                     .gap_2()
                     .ml_2()
                     .pl_1()
-                    .pr_3()
+                    .pr_2()
                     .py_1()
                     .rounded_full()
                     .border_1()
                     .border_color(t.border)
                     .bg(t.bg)
-                    .child(avatar(&account, 22., t))
-                    .child(div().text_sm().text_color(t.text).whitespace_nowrap().child(account)),
+                    .cursor_pointer()
+                    .hover(|d| d.bg(t.hover))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_accounts_dialog(window, cx)))
+                    .child(accounts::avatar(&account, 22., t))
+                    .child(div().text_sm().text_color(t.text).whitespace_nowrap().child(account))
+                    .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(t.muted)),
             )
     }
 
@@ -951,6 +995,7 @@ impl Launcher {
     fn modal(&self) -> Option<AnyView> {
         let edit = self.edit_dialog.clone().map(AnyView::from);
         edit.or_else(|| self.add_dialog.clone().map(AnyView::from))
+            .or_else(|| self.accounts_dialog.clone().map(AnyView::from))
     }
 }
 
@@ -1089,21 +1134,6 @@ fn instance_icon(size: f32, running: bool, icon: Option<&Path>, t: Theme) -> imp
             t.subtle
         })),
     }
-}
-
-fn avatar(name: &str, size: f32, t: Theme) -> impl IntoElement {
-    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-    div()
-        .size(px(size))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .bg(t.tile)
-        .text_xs()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(t.muted)
-        .child(initial)
 }
 
 fn detail(label: &'static str, value: String, t: Theme) -> impl IntoElement {

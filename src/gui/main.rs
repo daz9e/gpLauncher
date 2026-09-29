@@ -1,5 +1,6 @@
 //! Graphical front end for the launcher core.
 
+mod accounts;
 mod add_instance;
 mod assets;
 mod dropdown;
@@ -29,6 +30,7 @@ fn main() {
             KeyBinding::new("cmd-f", FocusSearch, None),
         ]);
         text_input::bind_keys(cx);
+        accounts::bind_keys(cx);
         add_instance::bind_keys(cx);
         edit_instance::bind_keys(cx);
         cx.set_menus(vec![

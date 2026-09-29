@@ -95,6 +95,15 @@ fn main() {
                         launcher.launch_id(&id, cx);
                     }
                     #[cfg(debug_assertions)]
+                    if let Ok(theme) = std::env::var("GPLAUNCHER_THEME") {
+                        use gplauncher::settings::Appearance;
+                        theme::set_appearance(if theme == "dark" {
+                            Appearance::Dark
+                        } else {
+                            Appearance::Light
+                        });
+                    }
+                    #[cfg(debug_assertions)]
                     if let Ok(spec) = std::env::var("GPLAUNCHER_OPEN") {
                         launcher.open_debug(&spec, window, cx);
                     }

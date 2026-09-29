@@ -264,6 +264,12 @@ fn import_mmc<R: Read + Seek>(
     if cfg_value("OverrideJavaArgs").as_deref() == Some("true") {
         inst.jvm_args = cfg_value("JvmArgs").unwrap_or_default();
     }
+    if cfg_value("OverrideWindow").as_deref() == Some("true") {
+        let size = |key| cfg_value(key).and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0);
+        if let Some((width, height)) = size("MinecraftWinWidth").zip(size("MinecraftWinHeight")) {
+            (inst.window_width, inst.window_height) = (Some(width), Some(height));
+        }
+    }
     inst.save()?;
 
     // Prism exports the icon as `<iconKey>.png` next to instance.cfg.

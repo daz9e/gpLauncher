@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use gplauncher::java;
 use gplauncher::settings::{Appearance, OnLaunch, Settings};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, PathPromptOptions,
@@ -10,6 +9,7 @@ use gpui::{
 };
 
 use crate::add_instance::{button, field};
+use crate::java_field::JavaField;
 use crate::text_input::{self, TextInput};
 use crate::theme::Theme;
 
@@ -17,7 +17,8 @@ actions!(settings_dialog, [Cancel, Save]);
 
 const CONTEXT: &str = "Settings";
 const CURSEFORGE_CONSOLE: &str = "https://console.curseforge.com/";
-const MIN_MEMORY_MB: u32 = 512;
+pub const MIN_MEMORY_MB: u32 = 512;
+pub const MEMORY_PRESETS: [u32; 4] = [2048, 4096, 6144, 8192];
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -46,13 +47,6 @@ pub enum SettingsEvent {
     Dismissed,
 }
 
-/// Result of running `java -version` on the chosen binary.
-enum JavaCheck {
-    Idle,
-    Running,
-    Done(Result<String, String>),
-}
-
 pub struct SettingsDialog {
     focus_handle: FocusHandle,
     /// The settings the dialog was opened with; fields not shown here are kept.
@@ -64,14 +58,13 @@ pub struct SettingsDialog {
     appearance: Appearance,
     on_launch: OnLaunch,
     fullscreen: bool,
-    java_path: Entity<TextInput>,
+    java: Entity<JavaField>,
     memory: Entity<TextInput>,
     jvm_args: Entity<TextInput>,
     width: Entity<TextInput>,
     height: Entity<TextInput>,
     curseforge_key: Entity<TextInput>,
     client_id: Entity<TextInput>,
-    java_check: JavaCheck,
     error: Option<String>,
 }
 
@@ -97,9 +90,20 @@ impl SettingsDialog {
         };
         let size = |v: Option<u32>| v.map(|v| v.to_string()).unwrap_or_default();
         let s = &settings;
-        let java_path = input("Automatic", s.java_path.clone(), cx);
-        cx.subscribe(&java_path, |this: &mut Self, _, _: &text_input::Changed, _| {
-            this.java_check = JavaCheck::Idle;
+        let java = cx.new(|cx| {
+            JavaField::new(
+                "Automatic".into(),
+                s.java_path.clone(),
+                "Each Minecraft version gets the Java it needs, downloaded from Mojang. \
+                 Choose a binary only to use your own Java for every instance.",
+                "Use automatic Java",
+                cx,
+            )
+        });
+        let java_input = java.read(cx).input().clone();
+        cx.subscribe(&java_input, |this: &mut Self, _, _: &text_input::Changed, cx| {
+            this.error = None;
+            cx.notify();
         })
         .detach();
         let memory = input(&Settings::default().memory_mb.to_string(), s.memory_mb.to_string(), cx);
@@ -118,14 +122,13 @@ impl SettingsDialog {
             appearance: s.appearance,
             on_launch: s.on_launch,
             fullscreen: s.fullscreen,
-            java_path,
+            java,
             memory,
             jvm_args,
             width,
             height,
             curseforge_key,
             client_id,
-            java_check: JavaCheck::Idle,
             error: None,
             settings,
         }
@@ -155,7 +158,7 @@ impl SettingsDialog {
                 }
             },
         };
-        s.java_path = self.text(&self.java_path, cx);
+        s.java_path = self.java.read(cx).text(cx);
         if !s.java_path.is_empty() && !Path::new(&s.java_path).is_file() {
             return self.fail(Section::Java, format!("No Java at {}", s.java_path), cx);
         }
@@ -207,77 +210,13 @@ impl SettingsDialog {
         .detach();
     }
 
-    fn pick_java(&mut self, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Choose".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = paths.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update(cx, |this, cx| {
-                this.java_path.update(cx, |i, cx| i.set_text(path.to_string_lossy().into_owned(), cx));
-                this.test_java(cx);
-            });
-        })
-        .detach();
-    }
-
-    fn test_java(&mut self, cx: &mut Context<Self>) {
-        let path = PathBuf::from(self.text(&self.java_path, cx));
-        if path.as_os_str().is_empty() {
-            return;
-        }
-        self.java_check = JavaCheck::Running;
-        cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { java::version(&path) }).await;
-            let _ = this.update(cx, |this, cx| {
-                // Only when the path was not edited meanwhile.
-                if matches!(this.java_check, JavaCheck::Running) {
-                    this.java_check = JavaCheck::Done(result.map_err(|e| format!("{e:#}")));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     // ---- rendering -----------------------------------------------------------
 
     fn nav(&self, t: Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w(px(150.))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .p_2()
-            .bg(t.panel)
-            .border_r_1()
-            .border_color(t.border)
-            .children(SECTIONS.into_iter().map(|(section, label, icon)| {
-                let active = self.section == section;
-                div()
-                    .id(label)
-                    .flex()
-                    .items_center()
-                    .gap_2p5()
-                    .h(px(30.))
-                    .px_2()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .when(active, |d| {
-                        d.bg(t.accent_soft).text_color(t.accent).font_weight(FontWeight::MEDIUM)
-                    })
-                    .when(!active, |d| d.text_color(t.text).hover(|d| d.bg(t.hover)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.show(section, cx)))
-                    .child(svg().path(icon).size(px(15.)).text_color(if active { t.accent } else { t.muted }))
-                    .child(label)
-            }))
+        nav_panel(t).children(SECTIONS.into_iter().map(|(section, label, icon)| {
+            nav_item(label, icon, self.section == section, t)
+                .on_click(cx.listener(move |this, _, _, cx| this.show(section, cx)))
+        }))
     }
 
     fn general(&self, t: Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -363,52 +302,11 @@ impl SettingsDialog {
     }
 
     fn java(&self, t: Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_path = !self.java_path.read(cx).text().trim().is_empty();
-        let testing = matches!(self.java_check, JavaCheck::Running);
-        let status = match &self.java_check {
-            _ if !has_path => hint(
-                "Each Minecraft version gets the Java it needs, downloaded from Mojang. \
-                 Choose a binary only to use your own Java for every instance.",
-                t,
-            ),
-            JavaCheck::Idle => hint("Press Test to check this Java.", t),
-            JavaCheck::Running => hint("Checking…", t),
-            JavaCheck::Done(Ok(version)) => div().text_xs().text_color(t.text).child(version.clone()),
-            JavaCheck::Done(Err(e)) => div().text_xs().text_color(t.danger).child(e.clone()),
-        };
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                field("Java executable", t)
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(div().flex_1().min_w_0().child(self.java_path.clone()))
-                            .child(
-                                button("browse-java", "Browse…", true, false, t)
-                                    .on_click(cx.listener(|this, _, _, cx| this.pick_java(cx))),
-                            )
-                            .child(
-                                button("test-java", "Test", has_path && !testing, false, t)
-                                    .when(has_path && !testing, |b| {
-                                        b.on_click(cx.listener(|this, _, _, cx| this.test_java(cx)))
-                                    }),
-                            ),
-                    )
-                    .child(status)
-                    .when(has_path, |d| {
-                        d.child(link("auto-java", "Use automatic Java", t).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.java_path.update(cx, |i, cx| i.set_text("", cx));
-                                this.java_check = JavaCheck::Idle;
-                                cx.notify();
-                            },
-                        )))
-                    }),
-            )
+            .child(field("Java executable", t).child(self.java.clone()))
             .child(
                 field("Memory, MB", t)
                     .child(
@@ -417,7 +315,7 @@ impl SettingsDialog {
                             .items_center()
                             .gap_2()
                             .child(div().w(px(120.)).child(self.memory.clone()))
-                            .children([2048, 4096, 6144, 8192].map(|mb| {
+                            .children(MEMORY_PRESETS.map(|mb| {
                                 let active = self.memory.read(cx).text().trim() == mb.to_string();
                                 chip(mb, active, t).on_click(cx.listener(move |this, _, _, cx| {
                                     this.memory.update(cx, |i, cx| i.set_text(mb.to_string(), cx));
@@ -560,16 +458,52 @@ impl Render for SettingsDialog {
     }
 }
 
-fn hint(text: &'static str, t: Theme) -> gpui::Div {
-    div().text_xs().text_color(t.subtle).child(text)
+pub fn hint(text: impl Into<SharedString>, t: Theme) -> gpui::Div {
+    div().text_xs().text_color(t.subtle).child(text.into())
 }
 
-fn link(id: &'static str, label: &'static str, t: Theme) -> gpui::Stateful<gpui::Div> {
+pub fn link(id: &'static str, label: &'static str, t: Theme) -> gpui::Stateful<gpui::Div> {
     div().id(id).text_xs().text_color(t.accent).cursor_pointer().hover(|d| d.underline()).child(label)
 }
 
+/// Left column listing the sections of a dialog.
+pub fn nav_panel(t: Theme) -> gpui::Div {
+    div()
+        .w(px(150.))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .p_2()
+        .bg(t.panel)
+        .border_r_1()
+        .border_color(t.border)
+}
+
+pub fn nav_item(
+    label: &'static str,
+    icon: &'static str,
+    active: bool,
+    t: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(label)
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .h(px(30.))
+        .px_2()
+        .rounded_md()
+        .text_sm()
+        .cursor_pointer()
+        .when(active, |d| d.bg(t.accent_soft).text_color(t.accent).font_weight(FontWeight::MEDIUM))
+        .when(!active, |d| d.text_color(t.text).hover(|d| d.bg(t.hover)))
+        .child(svg().path(icon).size(px(15.)).text_color(if active { t.accent } else { t.muted }))
+        .child(label)
+}
+
 /// A read-only path.
-fn path_box(path: String, t: Theme) -> impl IntoElement {
+pub fn path_box(path: String, t: Theme) -> impl IntoElement {
     div()
         .flex_1()
         .min_w_0()
@@ -586,12 +520,12 @@ fn path_box(path: String, t: Theme) -> impl IntoElement {
         .child(div().truncate().child(path))
 }
 
-fn segments(items: impl IntoIterator<Item = gpui::Stateful<gpui::Div>>, t: Theme) -> gpui::Div {
+pub fn segments(items: impl IntoIterator<Item = gpui::Stateful<gpui::Div>>, t: Theme) -> gpui::Div {
     div().flex().p_0p5().gap_0p5().rounded_md().bg(t.tile).children(items)
 }
 
 /// One option of a segmented control; matches the loader picker of "Add Instance".
-fn segment(label: &'static str, active: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
+pub fn segment(label: &'static str, active: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(label)
         .flex_1()
@@ -609,7 +543,7 @@ fn segment(label: &'static str, active: bool, t: Theme) -> gpui::Stateful<gpui::
 }
 
 /// Memory preset, e.g. `4 GB`.
-fn chip(mb: u32, active: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
+pub fn chip(mb: u32, active: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
     let label = match mb % 1024 {
         0 => format!("{} GB", mb / 1024),
         _ => format!("{mb} MB"),
@@ -630,7 +564,7 @@ fn chip(mb: u32, active: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
         .child(label)
 }
 
-fn checkbox(id: &'static str, label: &'static str, on: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
+pub fn checkbox(id: &'static str, label: &'static str, on: bool, t: Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .flex()

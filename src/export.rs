@@ -91,6 +91,13 @@ fn instance_cfg(inst: &Instance) -> String {
     if !inst.jvm_args.is_empty() {
         cfg.extend(["OverrideJavaArgs=true".into(), format!("JvmArgs={}", inst.jvm_args)]);
     }
+    if let Some((width, height)) = inst.resolution() {
+        cfg.extend([
+            "OverrideWindow=true".into(),
+            format!("MinecraftWinWidth={width}"),
+            format!("MinecraftWinHeight={height}"),
+        ]);
+    }
     cfg.join("\n") + "\n"
 }
 

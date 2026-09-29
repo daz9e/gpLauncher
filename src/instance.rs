@@ -57,6 +57,13 @@ pub struct Instance {
     pub memory_mb: Option<u32>,
     /// Appended to the global JVM arguments.
     pub jvm_args: String,
+    /// Overrides the global Java binary; empty = the launcher setting.
+    pub java_path: String,
+    /// Game window size; `None` = the launcher setting.
+    pub window_width: Option<u32>,
+    pub window_height: Option<u32>,
+    /// `None` = the launcher setting.
+    pub fullscreen: Option<bool>,
     /// Unix time of the last launch, for sorting.
     pub last_played: u64,
     /// Group the instance is shown under; empty = ungrouped.
@@ -81,6 +88,11 @@ impl Instance {
             loader if self.loader_version.is_empty() => format!("{} · {}", self.minecraft, loader.label()),
             loader => format!("{} · {} {}", self.minecraft, loader.label(), self.loader_version),
         }
+    }
+
+    /// Width and height when both are set.
+    pub fn resolution(&self) -> Option<(u32, u32)> {
+        self.window_width.zip(self.window_height)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -172,6 +184,9 @@ pub fn duplicate(data_dir: &Path, inst: &Instance, name: &str) -> Result<Instanc
     }
     copy.memory_mb = inst.memory_mb;
     copy.jvm_args = inst.jvm_args.clone();
+    copy.java_path = inst.java_path.clone();
+    (copy.window_width, copy.window_height) = (inst.window_width, inst.window_height);
+    copy.fullscreen = inst.fullscreen;
     copy.group = inst.group.clone();
     copy.icon = inst.icon.as_ref().map(|_| copy.dir.join(ICON_FILE));
     copy.save()?;

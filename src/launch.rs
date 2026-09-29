@@ -54,10 +54,11 @@ pub fn run(
     }
     let prepared = install::install(root, &instance.game_dir, &version_id, manifest, reporter)?;
 
-    let java = if settings.java_path.trim().is_empty() {
-        java::ensure(root, &prepared.java_component, prepared.java_major, reporter)?
-    } else {
-        PathBuf::from(settings.java_path.trim())
+    let java_path =
+        [&instance.java_path, &settings.java_path].map(|p| p.trim()).into_iter().find(|p| !p.is_empty());
+    let java = match java_path {
+        Some(path) => PathBuf::from(path),
+        None => java::ensure(root, &prepared.java_component, prepared.java_major, reporter)?,
     };
 
     let mut cmd = build_command(&java, &prepared, settings, instance, &account);
@@ -198,7 +199,8 @@ pub fn build_command(
         ("library_directory", settings.data_dir.join("libraries").to_string_lossy().into()),
     ]);
     let mut features: HashMap<&str, bool> = HashMap::new();
-    if let Some((width, height)) = settings.resolution() {
+    let resolution = instance.resolution().or(settings.resolution());
+    if let Some((width, height)) = resolution {
         features.insert("has_custom_resolution", true);
         vars.insert("resolution_width", width.to_string());
         vars.insert("resolution_height", height.to_string());
@@ -230,13 +232,13 @@ pub fn build_command(
         game.extend(
             v["minecraftArguments"].as_str().unwrap_or_default().split_whitespace().map(String::from),
         );
-        if settings.resolution().is_some() {
+        if resolution.is_some() {
             game.extend(
                 ["--width", "${resolution_width}", "--height", "${resolution_height}"].map(String::from),
             );
         }
     }
-    if settings.fullscreen {
+    if instance.fullscreen.unwrap_or(settings.fullscreen) {
         game.push("--fullscreen".into());
     }
     if let Some(arg) = &p.logging_arg {

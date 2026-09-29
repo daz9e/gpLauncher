@@ -278,8 +278,8 @@ impl Launcher {
         if self.edit_dialog.is_some() || self.is_running(&inst.id) {
             return;
         }
-        let memory = self.settings.memory_mb;
-        let dialog = cx.new(|cx| EditInstance::new(inst, memory, focus, window, cx));
+        let settings = self.settings.clone();
+        let dialog = cx.new(|cx| EditInstance::new(inst, settings, focus, window, cx));
         cx.subscribe_in(&dialog, window, |this, _, event, window, cx| {
             if let EditInstanceEvent::Saved(inst) = event
                 && let Some(slot) = this.instances.iter_mut().find(|i| i.id == inst.id)

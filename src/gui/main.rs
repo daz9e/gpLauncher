@@ -5,6 +5,7 @@ mod add_instance;
 mod assets;
 mod dropdown;
 mod edit_instance;
+mod java_field;
 mod launcher;
 mod modpack_browser;
 mod settings_dialog;

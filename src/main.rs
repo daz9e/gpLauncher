@@ -85,7 +85,7 @@ fn cmd_launch(args: &[String]) -> Result<()> {
         .unwrap_or_else(|| Instance::ephemeral(&target, settings.game_dir()));
     settings.accounts = vec![Account::offline(&user)];
     settings.selected_account = 0;
-    launch::run(&settings, &mut instance, &manifest, &stdout_reporter())
+    launch::run(&settings, &mut instance, &manifest, &stdout_reporter(), &launch::GameHandle::default())
 }
 
 fn cmd_import(files: &[String]) -> Result<()> {

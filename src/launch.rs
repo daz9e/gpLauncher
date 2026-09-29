@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -13,13 +15,28 @@ use crate::settings::Settings;
 use crate::version::{self, VersionEntry};
 use crate::{Event, Reporter, java, loader, platform};
 
+/// Shared handle to the game process, so another thread can stop it.
+#[derive(Clone, Default)]
+pub struct GameHandle(Arc<Mutex<Option<Child>>>);
+
+impl GameHandle {
+    /// Kills the game if it is running. Returns whether there was a process to kill.
+    pub fn kill(&self) -> bool {
+        match self.0.lock().unwrap().as_mut() {
+            Some(child) => child.kill().is_ok(),
+            None => false,
+        }
+    }
+}
+
 /// Full pipeline: refresh account -> install (with mod loader) -> Java -> start the game ->
-/// stream its output. Blocks until the game exits.
+/// stream its output. Blocks until the game exits; `handle` can kill it meanwhile.
 pub fn run(
     settings: &Settings,
     instance: &mut Instance,
     manifest: &[VersionEntry],
     reporter: &Reporter,
+    handle: &GameHandle,
 ) -> Result<()> {
     let mut account = settings.account().cloned().context("no account selected")?;
     if account.needs_refresh() {
@@ -52,7 +69,15 @@ pub fn run(
 
     let out = child.stdout.take().map(|s| pipe_lines(s, reporter.clone()));
     let err = child.stderr.take().map(|s| pipe_lines(s, reporter.clone()));
-    let status = child.wait()?;
+    *handle.0.lock().unwrap() = Some(child);
+    let status = loop {
+        let status = handle.0.lock().unwrap().as_mut().map(Child::try_wait).transpose()?.flatten();
+        if let Some(status) = status {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    *handle.0.lock().unwrap() = None;
     for t in [out, err].into_iter().flatten() {
         let _ = t.join();
     }

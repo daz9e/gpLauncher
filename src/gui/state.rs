@@ -322,6 +322,13 @@ impl AppState {
         }
     }
 
+    /// Stops every running game, e.g. before quitting.
+    pub fn kill_all(&mut self) {
+        for session in self.sessions.values() {
+            session.handle.kill();
+        }
+    }
+
     fn apply(&mut self, id: &str, msg: Msg, cx: &mut Context<Self>) {
         match msg {
             Msg::Event(Event::AccountRefreshed(account)) => {

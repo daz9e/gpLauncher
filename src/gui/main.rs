@@ -34,9 +34,37 @@ use crate::state::AppState;
 
 actions!(gplauncher, [Quit]);
 
+/// Quits, after asking whether to stop games that are still running.
+fn quit(state: &state::State, cx: &mut App) {
+    let running = state.read(cx).running_count();
+    let Some(window) = cx.windows().into_iter().next().filter(|_| running > 0) else {
+        cx.quit();
+        return;
+    };
+    let state = state.clone();
+    let _ = window.update(cx, |_, window, cx| {
+        let title = if running == 1 { "A game is still running" } else { "Games are still running" };
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            title,
+            Some("Quitting the launcher stops them. Unsaved progress in the game may be lost."),
+            &["Stop and Quit", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |cx| {
+            if answer.await == Ok(0) {
+                let _ = cx.update(|cx| {
+                    state.update(cx, |s, _| s.kill_all());
+                    cx.quit();
+                });
+            }
+        })
+        .detach();
+    });
+}
+
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
-        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", NewInstance, None),
@@ -77,6 +105,8 @@ fn main() {
         .detach();
 
         let state = AppState::new(cx);
+        let quit_state = state.clone();
+        cx.on_action(move |_: &Quit, cx| quit(&quit_state, cx));
         #[cfg(debug_assertions)]
         let state_for_debug = state.clone();
         let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);

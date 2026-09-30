@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::content::Kind;
@@ -101,7 +102,7 @@ fn capitalize(s: &str) -> String {
 // ---- mods, resource packs and shaders -------------------------------------------
 
 /// A project that can be added to an instance.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub slug: String,
@@ -118,7 +119,7 @@ impl Project {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Dependency {
     pub project_id: Option<String>,
     pub version_id: Option<String>,
@@ -126,7 +127,7 @@ pub struct Dependency {
     pub kind: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Version {
     pub id: String,
     pub project_id: String,
@@ -141,6 +142,7 @@ pub struct Version {
     pub dependencies: Vec<Dependency>,
 }
 
+#[derive(Serialize)]
 pub struct ProjectPage {
     pub projects: Vec<Project>,
     pub total: u64,

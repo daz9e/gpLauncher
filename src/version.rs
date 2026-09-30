@@ -3,13 +3,14 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{http, platform};
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct VersionEntry {
     pub id: String,
     /// `release`, `snapshot`, `old_beta`, `old_alpha` or `local` (e.g. Fabric/Forge profiles).

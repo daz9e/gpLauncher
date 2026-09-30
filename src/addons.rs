@@ -5,6 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::content::{self, Item, Kind};
 use crate::instance::{Instance, Loader};
@@ -124,7 +125,7 @@ fn safe_name(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Update {
     pub item: Item,
     /// Version number of the installed file, when Modrinth knows it.

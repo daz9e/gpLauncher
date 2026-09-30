@@ -5,13 +5,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
+use serde::{Deserialize, Serialize};
 
 use crate::import::{self, Imported};
 use crate::instance::{self, Loader};
 use crate::settings::Settings;
 use crate::{Reporter, curseforge, http, modrinth};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Platform {
     Modrinth,
     CurseForge,
@@ -26,7 +28,7 @@ impl Platform {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pack {
     pub platform: Platform,
     pub id: String,
@@ -38,7 +40,7 @@ pub struct Pack {
     pub website: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackVersion {
     pub id: String,
     pub name: String,
@@ -52,7 +54,8 @@ pub struct PackVersion {
     pub size: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Sort {
     /// Best match for the query; most popular without one.
     #[default]
@@ -75,7 +78,8 @@ impl Sort {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filters {
     pub game_version: Option<String>,
     /// Never [`Loader::Vanilla`]: modpacks always have a loader.
@@ -91,6 +95,7 @@ impl Filters {
     }
 }
 
+#[derive(Serialize)]
 pub struct Page {
     pub packs: Vec<Pack>,
     /// Number of results the query has in total.

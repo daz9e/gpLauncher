@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use serde_json::Value;
 use zip::ZipArchive;
 
@@ -374,7 +375,7 @@ fn extract_prefix(zip: &mut ZipArchive<fs::File>, prefix: &str, dest: &Path) -> 
 // ---- versions --------------------------------------------------------------------
 
 /// A loader version offered for a Minecraft version.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct LoaderVersion {
     pub version: String,
     /// Recommended (Forge) or not a beta.

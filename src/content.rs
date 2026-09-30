@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zip::ZipArchive;
 
@@ -18,7 +19,8 @@ use crate::instance::Instance;
 const DISABLED: &str = ".disabled";
 const ICON_SIZE: u32 = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     Mods,
     ResourcePacks,
@@ -78,7 +80,7 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Item {
     pub path: PathBuf,
     /// File name without the `.disabled` suffix.
@@ -385,7 +387,7 @@ pub fn human_size(bytes: u64) -> String {
 }
 
 /// Worlds in the instance's `saves` folder.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct World {
     pub path: PathBuf,
     pub folder: String,

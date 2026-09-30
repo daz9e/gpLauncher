@@ -1,0 +1,39 @@
+[package]
+name = "gplauncher-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "gpLauncher desktop app: a Tauri front end for the launcher core"
+publish = false
+
+[lib]
+name = "gplauncher_app"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "gplauncher-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+gplauncher = { path = ".." }
+anyhow = "1.0.104"
+dirs = "7.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tauri = { version = "2.12", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2.8"
+tauri-plugin-opener = "2.7"
+tauri-plugin-clipboard-manager = "2.4"
+
+[dev-dependencies]
+tauri = { version = "2.12", features = ["protocol-asset", "test"] }
+tempfile = "3"
+image = "0.25"
+zip = "8.6.0"
+
+[features]
+# Serves the built `ui/dist` instead of the Vite dev server; `cargo tauri build` turns it on.
+custom-protocol = ["tauri/custom-protocol"]

@@ -50,6 +50,7 @@ pub fn installed_id(root: &Path, loader: Loader, mc: &str, version: &str) -> Opt
 
 /// Installs Forge/NeoForge `version` for Minecraft `mc` and returns the profile id to launch.
 /// `java` overrides the runtime the processors run with.
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     root: &Path,
     game_dir: &Path,

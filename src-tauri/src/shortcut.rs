@@ -70,12 +70,14 @@ fn write(desktop: &std::path::Path, name: &str, exe: &str, inst: &Instance) -> R
     use std::os::unix::fs::PermissionsExt;
 
     let path = desktop.join(format!("{name}.desktop"));
+    // Names come from modpacks too; a line break would add keys to the entry.
+    let title = inst.name.replace(char::is_control, " ");
     let icon = inst.icon.as_ref().map(|i| format!("Icon={}\n", i.display())).unwrap_or_default();
     fs::write(
         &path,
         format!(
             "[Desktop Entry]\nType=Application\nName={}\nExec=\"{exe}\" {LAUNCH_FLAG} \"{}\"\n{icon}Terminal=false\n",
-            inst.name, inst.id
+            title, inst.id
         ),
     )?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;

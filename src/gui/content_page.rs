@@ -925,7 +925,7 @@ impl Render for ContentPage {
                             t.success
                         }))
                         .child(div().flex_1().truncate().child(text))
-                        .when(self.queue.len() > 0, |d| d.child(format!("{} queued", self.queue.len())))
+                        .when(!self.queue.is_empty(), |d| d.child(format!("{} queued", self.queue.len())))
                         .when_some(progress, |d, (done, total)| {
                             d.child(div().w(px(140.)).child(ui::progress_bar(done as f32 / total as f32, t)))
                         })

@@ -425,7 +425,7 @@ pub fn worlds(inst: &Instance) -> Vec<World> {
             }
         })
         .collect();
-    out.sort_by(|a, b| b.last_played.cmp(&a.last_played));
+    out.sort_by_key(|w| std::cmp::Reverse(w.last_played));
     out
 }
 
@@ -460,7 +460,7 @@ pub fn screenshots(inst: &Instance) -> Vec<PathBuf> {
             (t, p)
         })
         .collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
     out.into_iter().map(|(_, p)| p).collect()
 }
 
@@ -483,7 +483,7 @@ pub fn log_files(inst: &Instance) -> Vec<PathBuf> {
             (t, p)
         })
         .collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
     out.into_iter().map(|(_, p)| p).collect()
 }
 

@@ -237,13 +237,14 @@ impl LogView {
                         cx.open_url(&url);
                     }
                     Err(e) => {
-                        let _ = window.prompt(
+                        // Nothing to do after the prompt is dismissed.
+                        drop(window.prompt(
                             PromptLevel::Critical,
                             "Upload failed",
                             Some(&format!("{e:#}")),
                             &["OK"],
                             cx,
-                        );
+                        ));
                     }
                 }
                 cx.notify();

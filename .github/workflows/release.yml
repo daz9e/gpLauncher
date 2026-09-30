@@ -35,37 +35,64 @@ jobs:
         with:
           key: ${{ matrix.name }}
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Test
+        shell: bash
+        run: |
+          npm test --prefix ui
+          npm run check --prefix ui
+          cargo test --workspace
 
       - name: Version
         id: ver
         shell: bash
-        run: echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          # Stamp the tag's version into the app; manual runs keep the one from src-tauri/Cargo.toml.
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "config={\"version\":\"${GITHUB_REF_NAME#v}\"}" >> "$GITHUB_OUTPUT"
+          else
+            echo "config={}" >> "$GITHUB_OUTPUT"
+          fi
 
+      # `tauri build` builds the UI (ui/dist) and embeds it into the binary.
       - name: Build (macOS)
         if: runner.os == 'macOS'
+        env:
+          TAURI_CONFIG: ${{ steps.ver.outputs.config }}
         run: |
-          cargo build --release --bin gplauncher-gui --target aarch64-apple-darwin
-          cargo build --release --bin gplauncher-gui --target x86_64-apple-darwin
+          ui/node_modules/.bin/tauri build --config "$TAURI_CONFIG" --target universal-apple-darwin --bundles app
           mkdir -p out
-          lipo -create -output out/gplauncher-gui \
-            target/aarch64-apple-darwin/release/gplauncher-gui \
-            target/x86_64-apple-darwin/release/gplauncher-gui
+          cp -R target/universal-apple-darwin/release/bundle/macos/gpLauncher.app out/
 
       - name: Build (Windows / Linux)
         if: runner.os != 'macOS'
         shell: bash
+        env:
+          TAURI_CONFIG: ${{ steps.ver.outputs.config }}
         run: |
-          cargo build --release --bin gplauncher-gui
-          mkdir -p out
           if [ "$RUNNER_OS" = Windows ]; then
+            ui/node_modules/.bin/tauri build --config "$TAURI_CONFIG" --no-bundle
+            mkdir -p out
             cp target/release/gplauncher-gui.exe out/gpLauncher.exe
           else
+            ui/node_modules/.bin/tauri build --config "$TAURI_CONFIG" --bundles deb,appimage
+            mkdir -p out
             cp target/release/gplauncher-gui out/gplauncher
           fi
 
@@ -75,22 +102,6 @@ jobs:
           VERSION="${{ steps.ver.outputs.tag }}"
           BASE="gplauncher-$VERSION-${{ matrix.name }}"
           APP="out/gpLauncher.app"
-          mkdir -p "$APP/Contents/MacOS"
-          cp out/gplauncher-gui "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key><string>gplauncher-gui</string>
-              <key>CFBundleName</key><string>gpLauncher</string>
-              <key>CFBundleIdentifier</key><string>dev.gplauncher</string>
-              <key>CFBundlePackageType</key><string>APPL</string>
-              <key>CFBundleShortVersionString</key><string>${VERSION#v}</string>
-              <key>NSHighResolutionCapable</key><true/>
-          </dict>
-          </plist>
-          EOF
           # Ad-hoc signature so Apple Silicon runs the universal binary.
           codesign --force --deep --sign - "$APP"
 
@@ -128,7 +139,11 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: tar -czf "gplauncher-${{ steps.ver.outputs.tag }}-${{ matrix.name }}.tar.gz" -C out gplauncher
+        run: |
+          BASE="gplauncher-${{ steps.ver.outputs.tag }}-${{ matrix.name }}"
+          tar -czf "$BASE.tar.gz" -C out gplauncher
+          cp target/release/bundle/deb/*.deb "$BASE.deb"
+          cp target/release/bundle/appimage/*.AppImage "$BASE.AppImage"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,1 +1,7 @@
 /target
+/src-tauri/gen/schemas
+/out
+.DS_Store
+.pi/
+.vscode/
+.idea/
